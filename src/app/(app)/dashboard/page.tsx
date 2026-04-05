@@ -111,10 +111,19 @@ export default function DashboardPage() {
     supabase.from("products").select("id, name").eq("is_active", true).order("name")
       .then(({ data }) => setProducts((data || []).filter((p: any) =>
         !p.name.toLowerCase().includes("kartela") && !p.name.toLowerCase().includes("cartela"))));
-    // Load all distinct customer types from actual data
-    supabase.from("clients").select("customer_type").not("customer_type", "is", null)
-      .then(({ data }) => {
-        const types = Array.from(new Set((data || []).map((r: any) => r.customer_type).filter(Boolean))).sort() as string[];
+    // Load all distinct customer types via RPC (avoids 1000-row SELECT limit)
+    supabase.rpc("get_distinct_customer_types")
+      .then(({ data, error }) => {
+        if (error || !data) {
+          // Fallback: paginated fetch
+          supabase.from("clients").select("customer_type").not("customer_type", "is", null).limit(10000)
+            .then(({ data: rows }) => {
+              const types = Array.from(new Set((rows || []).map((r: any) => r.customer_type).filter(Boolean))).sort() as string[];
+              setCustTypes(types);
+            });
+          return;
+        }
+        const types = (data as any[]).map((r) => r.customer_type).filter(Boolean).sort() as string[];
         setCustTypes(types);
       });
   }, []);
