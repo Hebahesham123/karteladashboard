@@ -641,21 +641,21 @@ export default function DashboardPage() {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-5">
       {/* Header */}
-      <div className="flex items-start justify-between gap-4 flex-wrap">
+      <div className="flex items-center justify-between gap-4 flex-wrap">
         <div>
-          <h1 className="text-2xl font-bold">{t.title}</h1>
+          <h1 className="text-2xl font-bold tracking-tight">{t.title}</h1>
           <p className="text-muted-foreground text-sm mt-0.5">{t.subtitle}</p>
         </div>
-        <Button variant="outline" size="sm" onClick={() => { dataCache.invalidate(); fetchData(true); }} className="gap-2 shrink-0">
-          <Activity className="h-4 w-4" />
+        <Button variant="outline" size="sm" onClick={() => { dataCache.invalidate(); fetchData(true); }} className="gap-2 shrink-0 h-8">
+          <Activity className="h-3.5 w-3.5" />
           {isRTL ? "تحديث" : "Refresh"}
         </Button>
       </div>
 
       {/* ── Unified filter bar ── */}
-      <div className="rounded-xl border border-border bg-card shadow-sm px-4 py-2.5 overflow-x-auto">
+      <div className="rounded-xl border border-border bg-card shadow-sm px-3 py-2 overflow-x-auto">
         <div className="flex items-center gap-2 min-w-max">
           {/* Icon label */}
           <div className="flex items-center gap-1.5 text-xs font-semibold text-muted-foreground shrink-0">
@@ -830,51 +830,66 @@ export default function DashboardPage() {
         </div>
       )}
 
-      {/* ── 3 Main KPI Boxes: Orders · Meters · Clients ── */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-        <KPICard
-          title={isRTL ? "عدد الطلبات" : "Number of Orders"}
-          value={formatNumber(orderCount)}
-          subtitle={isRTL ? "في الفترة المحددة" : "In selected period"}
-          description={isRTL ? "إجمالي سجلات الطلبات المرفوعة في الفترة المختارة" : "Total order records uploaded in the selected period"}
-          icon={<ShoppingCart className="h-5 w-5" />}
-          color="purple" index={10}
-          onClick={() => router.push("/clients")}
-          clickLabel={t.clickDetails}
-        />
-        <KPICard
-          title={t.totalMeters}
-          value={`${formatNumber(totalMeters)} ${isRTL ? "م" : "m"}`}
-          trend={metersGrowth}
-          subtitle={t.vsLast}
-          description={t.descMeters}
-          icon={<TrendingUp className="h-5 w-5" />}
-          color="blue" index={11}
-          onClick={() => {
-            dataCache.invalidate(`clients_v9:`);
-            setFilter("selectedMonth", dashTo.month);
-            setFilter("selectedYear",  dashTo.year);
-            setFilter("selectedLevel", null);
-            router.push("/clients");
-          }}
-          clickLabel={t.clickDetails}
-        />
-        <KPICard
-          title={t.totalClients}
-          value={monthlyClientCount || uniqueClients}
-          subtitle={`${isRTL ? "من" : "of"} ${totalClientCount} ${isRTL ? "إجمالي" : "total"}`}
-          description={t.descClients}
-          icon={<Users className="h-5 w-5" />}
-          color="green" index={12}
-          onClick={() => {
-            dataCache.invalidate(`clients_v9:`);
-            setFilter("selectedMonth", dashTo.month);
-            setFilter("selectedYear",  dashTo.year);
-            setFilter("selectedLevel", null);
-            router.push("/clients");
-          }}
-          clickLabel={t.viewAll}
-        />
+      {/* ── 4 Main KPI Summary Cards ── */}
+      <div className="grid grid-cols-2 xl:grid-cols-4 gap-3">
+        {/* Orders */}
+        <button onClick={() => router.push("/clients")}
+          className="rounded-2xl border border-purple-200 dark:border-purple-800 bg-gradient-to-br from-purple-50 to-purple-100/50 dark:from-purple-950/30 dark:to-purple-900/10 p-4 text-start hover:shadow-md transition-all group">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-xs font-semibold text-purple-600 dark:text-purple-400">{isRTL ? "عدد الطلبات" : "Orders"}</span>
+            <div className="h-8 w-8 rounded-xl bg-purple-500/15 flex items-center justify-center group-hover:bg-purple-500/25 transition-colors">
+              <ShoppingCart className="h-4 w-4 text-purple-600 dark:text-purple-400" />
+            </div>
+          </div>
+          <div className="text-2xl font-bold tabular-nums text-foreground">{formatNumber(orderCount)}</div>
+          <div className="text-[11px] text-muted-foreground mt-0.5">{isRTL ? "في الفترة المحددة" : "In selected period"}</div>
+        </button>
+
+        {/* Meters */}
+        <button onClick={() => { dataCache.invalidate("clients_v9:"); setFilter("selectedMonth", dashTo.month); setFilter("selectedYear", dashTo.year); setFilter("selectedLevel", null); router.push("/clients"); }}
+          className="rounded-2xl border border-blue-200 dark:border-blue-800 bg-gradient-to-br from-blue-50 to-blue-100/50 dark:from-blue-950/30 dark:to-blue-900/10 p-4 text-start hover:shadow-md transition-all group">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-xs font-semibold text-blue-600 dark:text-blue-400">{t.totalMeters}</span>
+            <div className="h-8 w-8 rounded-xl bg-blue-500/15 flex items-center justify-center group-hover:bg-blue-500/25 transition-colors">
+              <TrendingUp className="h-4 w-4 text-blue-600 dark:text-blue-400" />
+            </div>
+          </div>
+          <div className="text-2xl font-bold tabular-nums text-foreground">{formatNumber(totalMeters)}<span className="text-sm font-medium ml-1">{isRTL ? "م" : "m"}</span></div>
+          <div className="flex items-center gap-1.5 mt-0.5">
+            {metersGrowth !== 0 && (
+              <span className={`text-[11px] font-semibold ${metersGrowth > 0 ? "text-green-600" : "text-red-500"}`}>
+                {metersGrowth > 0 ? "▲" : "▼"} {Math.abs(metersGrowth).toFixed(1)}%
+              </span>
+            )}
+            <span className="text-[11px] text-muted-foreground">{t.vsLast}</span>
+          </div>
+        </button>
+
+        {/* Clients */}
+        <button onClick={() => { dataCache.invalidate("clients_v9:"); setFilter("selectedMonth", dashTo.month); setFilter("selectedYear", dashTo.year); setFilter("selectedLevel", null); router.push("/clients"); }}
+          className="rounded-2xl border border-green-200 dark:border-green-800 bg-gradient-to-br from-green-50 to-green-100/50 dark:from-green-950/30 dark:to-green-900/10 p-4 text-start hover:shadow-md transition-all group">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-xs font-semibold text-green-600 dark:text-green-400">{isRTL ? "عملاء نشطون" : "Active Clients"}</span>
+            <div className="h-8 w-8 rounded-xl bg-green-500/15 flex items-center justify-center group-hover:bg-green-500/25 transition-colors">
+              <Users className="h-4 w-4 text-green-600 dark:text-green-400" />
+            </div>
+          </div>
+          <div className="text-2xl font-bold tabular-nums text-foreground">{(monthlyClientCount || uniqueClients).toLocaleString()}</div>
+          <div className="text-[11px] text-muted-foreground mt-0.5">{isRTL ? "من" : "of"} {totalClientCount.toLocaleString()} {isRTL ? "إجمالي" : "total"}</div>
+        </button>
+
+        {/* Revenue */}
+        <button onClick={() => router.push("/clients")}
+          className="rounded-2xl border border-amber-200 dark:border-amber-800 bg-gradient-to-br from-amber-50 to-amber-100/50 dark:from-amber-950/30 dark:to-amber-900/10 p-4 text-start hover:shadow-md transition-all group">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-xs font-semibold text-amber-600 dark:text-amber-400">{isRTL ? "الإيراد الإجمالي" : "Total Revenue"}</span>
+            <div className="h-8 w-8 rounded-xl bg-amber-500/15 flex items-center justify-center group-hover:bg-amber-500/25 transition-colors">
+              <Activity className="h-4 w-4 text-amber-600 dark:text-amber-400" />
+            </div>
+          </div>
+          <div className="text-2xl font-bold tabular-nums text-foreground">{formatNumber(totalRevenue)}</div>
+          <div className="text-[11px] text-muted-foreground mt-0.5">EGP</div>
+        </button>
       </div>
 
       {/* 4 KPI Cards side-by-side */}
@@ -1138,24 +1153,25 @@ export default function DashboardPage() {
         </Card>
       </div>
 
-      {/* Rankings — uses same filter as the main filter bar */}
-      <Card className="p-4">
-        <div className="flex items-center justify-between mb-4">
+      {/* Rankings — 3 columns */}
+      <div>
+        <div className="flex items-center justify-between mb-3">
           <div className="flex items-center gap-2">
-            <span className="text-sm font-semibold text-foreground">{isRTL ? "الترتيب" : "Rankings"}</span>
-            <span className="text-xs px-2 py-0.5 rounded-full bg-primary/10 text-primary border border-primary/20 font-medium">
+            <span className="text-base font-bold text-foreground">{isRTL ? "الترتيب" : "Rankings"}</span>
+            <span className="text-xs px-2.5 py-1 rounded-full bg-primary/10 text-primary border border-primary/20 font-semibold">
               {(isRTL ? MONTHS_AR : MONTHS_EN)[dashFrom.month - 1]} {dashFrom.year}
               {(dashFrom.month !== dashTo.month || dashFrom.year !== dashTo.year) && ` → ${(isRTL ? MONTHS_AR : MONTHS_EN)[dashTo.month - 1]} ${dashTo.year}`}
             </span>
           </div>
           {rankLoading && (
-            <span className="text-xs text-muted-foreground animate-pulse">
+            <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+              <div className="h-3 w-3 rounded-full border-2 border-primary border-t-transparent animate-spin" />
               {isRTL ? "جاري التحديث..." : "Updating..."}
-            </span>
+            </div>
           )}
         </div>
 
-        <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-2 gap-6">
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
 
         {/* Salesperson Leaderboard */}
         <Card>
@@ -1308,9 +1324,8 @@ export default function DashboardPage() {
 
 
         </div>{/* end rankings grid */}
-      </Card>{/* end rankings wrapper */}
+      </div>{/* end rankings wrapper */}
 
-      <AnimatePresence />
     </div>
   );
 }
