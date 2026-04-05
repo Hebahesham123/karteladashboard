@@ -87,7 +87,7 @@ export default function DashboardPage() {
   const [selectedProduct, setSelectedProduct] = useState<string | null>(null);
   const [selectedCustType, setSelectedCustType] = useState<string | null>(null);
   const [products, setProducts] = useState<{ id: string; name: string }[]>([]);
-  const CUST_TYPES = ["VIP", "استهلاكي", "تجاري", "جملة", "تصنيع"];
+  const [custTypes, setCustTypes] = useState<string[]>([]);
   const kpiCacheRef = useRef<Map<string, { totalM: number; greenC: number; orangeC: number; redC: number; activeC: number }>>(new Map());
 
   // ── KPI date range (main dashboard filter) ───────────────────────────────
@@ -103,7 +103,7 @@ export default function DashboardPage() {
   const [salespersons, setSalespersons] = useState<{ id: string; name: string }[]>([]);
   const dashYears = Array.from({ length: 3 }, (_, i) => now.getFullYear() - i);
 
-  // Load salesperson + product lists once
+  // Load salesperson + product + customer type lists once
   useEffect(() => {
     const supabase = createClient();
     supabase.from("salespersons").select("id, name").eq("is_active", true).order("name")
@@ -111,6 +111,12 @@ export default function DashboardPage() {
     supabase.from("products").select("id, name").eq("is_active", true).order("name")
       .then(({ data }) => setProducts((data || []).filter((p: any) =>
         !p.name.toLowerCase().includes("kartela") && !p.name.toLowerCase().includes("cartela"))));
+    // Load all distinct customer types from actual data
+    supabase.from("clients").select("customer_type").not("customer_type", "is", null)
+      .then(({ data }) => {
+        const types = Array.from(new Set((data || []).map((r: any) => r.customer_type).filter(Boolean))).sort() as string[];
+        setCustTypes(types);
+      });
   }, []);
 
   // ── Rankings date range (independent from main KPI filter) ───────────────
@@ -765,7 +771,7 @@ export default function DashboardPage() {
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="all" className="text-xs">{isRTL ? "كل الأنواع" : "All Types"}</SelectItem>
-              {CUST_TYPES.map((ct) => <SelectItem key={ct} value={ct} className="text-xs">{ct}</SelectItem>)}
+              {custTypes.map((ct) => <SelectItem key={ct} value={ct} className="text-xs">{ct}</SelectItem>)}
             </SelectContent>
           </Select>
 
