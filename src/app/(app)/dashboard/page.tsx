@@ -140,7 +140,7 @@ export default function DashboardPage() {
     const prevEndYear  = Math.floor(prevEndAbs / 12);
     const prevEndMonth = prevEndAbs % 12 || 12;
 
-    const cacheKey = `dash_v4:${dashFrom.year}-${dashFrom.month}:${dashTo.year}-${dashTo.month}-${spFilter || "all"}`;
+    const cacheKey = `dash_v4:${dashFrom.year}-${dashFrom.month}:${dashTo.year}-${dashTo.month}-${spFilter || "all"}-${selectedProduct || ""}-${selectedCustType || ""}`;
 
     // ── Global session cache hit ──────────────────────────────────────────
     const globalCached = dataCache.get<{
