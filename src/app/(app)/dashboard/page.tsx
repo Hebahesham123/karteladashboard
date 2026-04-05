@@ -111,21 +111,28 @@ export default function DashboardPage() {
     supabase.from("products").select("id, name").eq("is_active", true).order("name")
       .then(({ data }) => setProducts((data || []).filter((p: any) =>
         !p.name.toLowerCase().includes("kartela") && !p.name.toLowerCase().includes("cartela"))));
-    // Load all distinct customer types via RPC (avoids 1000-row SELECT limit)
-    supabase.rpc("get_distinct_customer_types")
-      .then(({ data, error }) => {
-        if (error || !data) {
-          // Fallback: paginated fetch
-          supabase.from("clients").select("customer_type").not("customer_type", "is", null).limit(10000)
-            .then(({ data: rows }) => {
-              const types = Array.from(new Set((rows || []).map((r: any) => r.customer_type).filter(Boolean))).sort() as string[];
-              setCustTypes(types);
-            });
-          return;
-        }
-        const types = (data as any[]).map((r) => r.customer_type).filter(Boolean).sort() as string[];
-        setCustTypes(types);
-      });
+    // Load all distinct customer types — paginate to get past the 1000-row limit
+    const EXCLUDED = ["الشركات الشقيقة"];
+    const loadTypes = async () => {
+      const allTypes = new Set<string>();
+      let offset = 0;
+      const PAGE = 1000;
+      while (true) {
+        const { data, error } = await supabase
+          .from("clients")
+          .select("customer_type")
+          .not("customer_type", "is", null)
+          .neq("customer_type", "")
+          .range(offset, offset + PAGE - 1);
+        if (error || !data?.length) break;
+        data.forEach((r: any) => { if (r.customer_type) allTypes.add(r.customer_type); });
+        if (data.length < PAGE) break;
+        offset += PAGE;
+      }
+      EXCLUDED.forEach((t) => allTypes.delete(t));
+      setCustTypes(Array.from(allTypes).sort());
+    };
+    loadTypes();
   }, []);
 
   // ── Rankings date range (independent from main KPI filter) ───────────────
