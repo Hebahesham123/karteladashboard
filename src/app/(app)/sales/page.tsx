@@ -127,7 +127,7 @@ export default function SalesPage() {
     }
 
     // Batch-fetch notes + live current_status from clients table (not view — view may lag)
-    const clientIds = [...new Set(allRows.map((r) => r.client_id))];
+    const clientIds = Array.from(new Set(allRows.map((r) => r.client_id)));
     let clientMeta: Record<string, { notes: string | null; current_status: string | null }> = {};
     if (clientIds.length > 0) {
       const chunks: string[][] = [];
