@@ -170,7 +170,7 @@ export default function ClientsPage() {
       })();
       const inactiveClientsQ = wantInactive
         ? fetchPages("clients", "id, partner_id, name, salesperson_id, current_status, customer_type", (q) => {
-            let qq = q.neq("customer_type", "الشركات الشقيقة");
+            let qq = q.neq("customer_type", "شركة شقيقة").neq("customer_type", "الشركات الشقيقة");
             if (spFilter) return qq.eq("salesperson_id", spFilter);
             return qq;
           })
@@ -179,6 +179,7 @@ export default function ClientsPage() {
       const [viewResult, spData, clientCountResult, inactiveClientsResult] = await Promise.all([
         fetchPages("client_monthly_metrics", VIEW_COLS, (q) => {
           let qq = q.eq("month", selectedMonth).eq("year", selectedYear)
+                    .neq("customer_type", "شركة شقيقة")
                     .neq("customer_type", "الشركات الشقيقة");
           if (spFilter) qq = qq.eq("salesperson_id", spFilter);
           return qq;

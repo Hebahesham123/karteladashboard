@@ -9,6 +9,7 @@ AS $$
   FROM clients c
   WHERE c.customer_type IS NOT NULL
     AND c.customer_type <> ''
+    AND c.customer_type <> 'شركة شقيقة'
     AND c.customer_type <> 'الشركات الشقيقة'
   ORDER BY c.customer_type;
 $$;

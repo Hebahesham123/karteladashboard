@@ -112,7 +112,7 @@ export default function DashboardPage() {
       .then(({ data }) => setProducts((data || []).filter((p: any) =>
         !p.name.toLowerCase().includes("kartela") && !p.name.toLowerCase().includes("cartela"))));
     // Load all distinct customer types — paginate to get past the 1000-row limit
-    const EXCLUDED = ["الشركات الشقيقة"];
+    const EXCLUDED = ["شركة شقيقة", "الشركات الشقيقة"];
     const loadTypes = async () => {
       const allTypes = new Set<string>();
       let offset = 0;
@@ -244,7 +244,7 @@ export default function DashboardPage() {
         if (spFilter)         qq = qq.eq("salesperson_id", spFilter);
         if (selectedProduct)  qq = qq.eq("top_product_name", selectedProduct);
         if (selectedCustType) qq = qq.eq("customer_type", selectedCustType);
-        qq = qq.neq("customer_type", "الشركات الشقيقة");
+        qq = qq.neq("customer_type", "شركة شقيقة").neq("customer_type", "الشركات الشقيقة");
         return qq;
       };
 
@@ -511,6 +511,7 @@ export default function DashboardPage() {
           .gte("year", dashFrom.year)
           .lte("year", dashTo.year)
           .gt("total_meters", 0)
+          .neq("customer_type", "شركة شقيقة")
           .neq("customer_type", "الشركات الشقيقة")
           .range(from, to);
         if (dashFrom.year === dashTo.year) {
