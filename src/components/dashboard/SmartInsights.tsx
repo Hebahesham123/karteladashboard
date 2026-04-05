@@ -17,7 +17,7 @@ interface SmartInsightsProps {
   insights: InsightItem[];
   title: string;
   locale: string;
-  onClientClick?: (id: string) => void;
+  onClientClick?: (_: string) => void;
 }
 
 const insightConfig = {

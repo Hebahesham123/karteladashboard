@@ -30,7 +30,7 @@ interface ParsedRow {
   cartela_cross_month: boolean;      // true = كارتله came from a different month
   cartela_assumed: boolean;          // true = no explicit كارتله row, defaulted to 1
   cartela_month: number | null;      // the actual month the كارتله was recorded in
-  level: "RED" | "ORANGE" | "GREEN";
+  level: "RED" | "ORANGE" | "GREEN" | "INACTIVE";
   isValid: boolean;
   errors: string[];
   variants: { name: string; meters: number }[]; // color variants combined into total

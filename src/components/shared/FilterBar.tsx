@@ -27,7 +27,7 @@ export function FilterBar({
   showLevel = false,
   showProduct = false,
 }: FilterBarProps) {
-  const { filters, setFilter, resetFilters } = useStore();
+  const { filters, setFilter } = useStore();
   const [salespersons, setSalespersons] = useState<{ id: string; name: string }[]>([]);
   const [products, setProducts] = useState<{ id: string; name: string }[]>([]);
   const [spOpen, setSpOpen] = useState(false);

@@ -15,27 +15,27 @@ interface FilterState {
 interface AppState {
   // Layout
   sidebarCollapsed: boolean;
-  setSidebarCollapsed: (collapsed: boolean) => void;
+  setSidebarCollapsed: (_: boolean) => void;
   toggleSidebar: () => void;
 
   // Locale
   locale: string;
-  setLocale: (locale: string) => void;
+  setLocale: (_: string) => void;
 
   // User
   currentUser: User | null;
-  setCurrentUser: (user: User | null) => void;
-  salespersonId: string | null;      // set when logged-in user is a salesperson
-  setSalespersonId: (id: string | null) => void;
+  setCurrentUser: (_: User | null) => void;
+  salespersonId: string | null;
+  setSalespersonId: (_: string | null) => void;
 
   // Filters
   filters: FilterState;
-  setFilter: <K extends keyof FilterState>(key: K, value: FilterState[K]) => void;
+  setFilter: <K extends keyof FilterState>(_k: K, _v: FilterState[K]) => void;
   resetFilters: () => void;
 
   // UI
   isLoading: boolean;
-  setIsLoading: (loading: boolean) => void;
+  setIsLoading: (_: boolean) => void;
 }
 
 // Default to current month + year so pages load with real data immediately

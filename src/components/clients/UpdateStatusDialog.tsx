@@ -25,7 +25,7 @@ interface UpdateStatusDialogProps {
   client: { id: string; name: string; current_status: ClientStatus };
   locale: string;
   onClose: () => void;
-  onSuccess: () => void;
+  onSuccess: (newStatus?: string) => void;
 }
 
 const STATUSES: ClientStatus[] = [
@@ -108,7 +108,7 @@ export function UpdateStatusDialog({
         },
       });
 
-      onSuccess();
+      onSuccess(newStatus);
     } catch {
       setError(isRTL ? "حدث خطأ أثناء الحفظ" : "An error occurred while saving");
     } finally {

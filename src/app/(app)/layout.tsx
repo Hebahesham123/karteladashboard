@@ -39,7 +39,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
             .from("salespersons")
             .select("id")
             .eq("user_id", session.user.id)
-            .single();
+            .maybeSingle();
           setSalespersonId(sp?.id || null);
         } else {
           setSalespersonId(null);

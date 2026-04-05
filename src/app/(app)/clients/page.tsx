@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
+import { useSearchParams } from "next/navigation";
 import {
   useReactTable,
   getCoreRowModel,
@@ -12,18 +13,23 @@ import {
   type SortingState,
   type ColumnFiltersState,
 } from "@tanstack/react-table";
-import { motion } from "framer-motion";
+import { motion, AnimatePresence } from "framer-motion";
 import {
   ChevronUp,
   ChevronDown,
   ChevronsUpDown,
   ChevronLeft,
   ChevronRight,
+  ChevronRight as ExpandIcon,
   Search,
   Download,
   RefreshCw,
   MessageSquarePlus,
   Edit3,
+  History,
+  MessageSquare,
+  StickyNote,
+  ArrowRight,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -66,21 +72,44 @@ interface ClientRow {
 export default function ClientsPage() {
   const { locale, filters, salespersonId, currentUser } = useStore();
   const isRTL = locale === "ar";
+  const searchParams = useSearchParams();
   const [clients, setClients] = useState<ClientRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [fetchError, setFetchError] = useState<string | null>(null);
   const [sorting, setSorting] = useState<SortingState>([]);
-  const [globalFilter, setGlobalFilter] = useState("");
-  const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>([]);
+  const [globalFilter, setGlobalFilter] = useState(() => searchParams.get("search") ?? "");
+  const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>(() => {
+    const cf: ColumnFiltersState = [];
+    const product = searchParams.get("product");
+    if (product) cf.push({ id: "top_product_name", value: product });
+    return cf;
+  });
   const [selectedClient, setSelectedClient] = useState<ClientRow | null>(null);
   const [dialogType, setDialogType] = useState<"status" | "note" | "history" | null>(null);
+  const didApplyUrlParams = useRef(false);
+
+  // Apply URL search params once on first load
+  useEffect(() => {
+    if (didApplyUrlParams.current) return;
+    didApplyUrlParams.current = true;
+    const search  = searchParams.get("search");
+    const product = searchParams.get("product");
+    if (search)  setGlobalFilter(search);
+    if (product) setColumnFilters((cf) => {
+      const without = cf.filter((f) => f.id !== "top_product_name");
+      return [...without, { id: "top_product_name", value: product }];
+    });
+  }, [searchParams]);
 
   // Sync status/level store filters → table column filters (instant, no Supabase call)
   useEffect(() => {
     const cf: ColumnFiltersState = [];
     if (filters.selectedStatus) cf.push({ id: "current_status", value: filters.selectedStatus });
     if (filters.selectedLevel)  cf.push({ id: "level",          value: filters.selectedLevel });
-    setColumnFilters(cf);
+    setColumnFilters((prev) => {
+      const preserved = prev.filter((f) => !["current_status", "level"].includes(f.id));
+      return [...preserved, ...cf];
+    });
   }, [filters.selectedStatus, filters.selectedLevel]);
 
   const fetchClients = useCallback(async (forceRefresh = false) => {
@@ -130,7 +159,7 @@ export default function ClientsPage() {
         return { rows: all, error: null };
       };
 
-      const VIEW_COLS = "client_id, partner_id, client_name, total_meters, total_revenue, order_count, customer_type, level, cartela_count, top_product_cartela, top_product_name, salesperson_id, salesperson_name, salesperson_code, month, year, kartela_month, kartela_year, kartela_cross_month";
+      const VIEW_COLS = "client_id, partner_id, client_name, current_status, total_meters, total_revenue, order_count, customer_type, level, cartela_count, top_product_cartela, top_product_name, salesperson_id, salesperson_name, salesperson_code, month, year, kartela_month, kartela_year, kartela_cross_month";
       const wantInactive = filters.selectedLevel === "INACTIVE";
 
       // ── 1. Fetch in parallel: view rows + salespersons + (if inactive: all clients, else: count only) ──
@@ -195,7 +224,7 @@ export default function ClientsPage() {
           salesperson_code:    ord.salesperson_code || sp?.code  || null,
           top_product_name:    ord.top_product_name || null,
           top_product_cartela: Number(ord.top_product_cartela) || 0,
-          current_status:      "NEW" as ClientStatus,
+          current_status:      (ord.current_status ?? "NEW") as ClientStatus,
           total_meters:        Number(ord.total_meters)   || 0,
           total_revenue:       Number(ord.total_revenue)  || 0,
           order_count:         Number(ord.order_count)    || 0,
@@ -229,6 +258,26 @@ export default function ClientsPage() {
           });
         });
       }
+
+      // Batch-fetch notes + latest current_status from clients table
+      const allClientIds = combined.map((c) => c.id);
+      let notesMap: Record<string, { notes: string | null; current_status: string }> = {};
+      if (allClientIds.length > 0) {
+        const chunks = [];
+        for (let i = 0; i < allClientIds.length; i += 500) chunks.push(allClientIds.slice(i, i + 500));
+        for (const chunk of chunks) {
+          const { data: clientRows } = await supabase
+            .from("clients").select("id, notes, current_status").in("id", chunk);
+          (clientRows ?? []).forEach((c: any) => { notesMap[c.id] = { notes: c.notes ?? null, current_status: c.current_status }; });
+        }
+      }
+      combined.forEach((c) => {
+        const fresh = notesMap[c.id];
+        if (fresh) {
+          c.notes = fresh.notes;
+          if (fresh.current_status) c.current_status = fresh.current_status as ClientStatus;
+        }
+      });
 
       combined.sort((a, b) => b.total_meters - a.total_meters);
       dataCache.set(cacheKey, combined);
@@ -293,10 +342,75 @@ export default function ClientsPage() {
   const [selectedRows, setSelectedRows] = useState<Set<string>>(new Set());
   const [prodOpen,    setProdOpen]    = useState(false);
   const [typeOpen,    setTypeOpen]    = useState(false);
+
+  // Expandable log panel state
+  const [expanded,   setExpanded]   = useState<Record<string, boolean>>({});
+  const [logCache,   setLogCache]   = useState<Record<string, any[]>>({});
+  const [logLoading, setLogLoading] = useState<Record<string, boolean>>({});
+
+  const fetchLog = async (clientId: string) => {
+    if (logCache[clientId]) return;
+    setLogLoading((p) => ({ ...p, [clientId]: true }));
+    const supabase = createClient();
+    const [{ data: hist }, { data: acts }] = await Promise.all([
+      supabase.from("client_status_history")
+        .select("id,old_status,new_status,reason,created_at,users(full_name)")
+        .eq("client_id", clientId).order("created_at", { ascending: false }).limit(15),
+      supabase.from("activity_logs")
+        .select("id,activity_type,description,metadata,created_at,users(full_name)")
+        .eq("entity_id", clientId).order("created_at", { ascending: false }).limit(15),
+    ]);
+    const entries = [
+      ...(hist ?? []).map((h: any) => ({
+        id: `h_${h.id}`, type: "STATUS_CHANGE",
+        metadata: { old_status: h.old_status, new_status: h.new_status, reason: h.reason },
+        created_at: h.created_at, user_name: h.users?.full_name ?? "—",
+      })),
+      ...(acts ?? []).filter((a: any) => a.activity_type === "NOTE_ADDED").map((a: any) => ({
+        id: `a_${a.id}`, type: "NOTE_ADDED",
+        metadata: a.metadata, created_at: a.created_at, user_name: a.users?.full_name ?? "—",
+      })),
+    ].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+    setLogCache((p) => ({ ...p, [clientId]: entries }));
+    setLogLoading((p) => ({ ...p, [clientId]: false }));
+  };
+
+  const toggleExpand = (id: string) => {
+    const opening = !expanded[id];
+    setExpanded((p) => ({ ...p, [id]: opening }));
+    if (opening) fetchLog(id);
+  };
+
+  const invalidateClientCache = () => {
+    dataCache.invalidate("clients_v9:");
+  };
   const toggleRow = (id: string) => setSelectedRows(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
   const toggleAll = (rows: ClientRow[]) => setSelectedRows(prev => prev.size === rows.length ? new Set() : new Set(rows.map(r => r.id)));
 
+  const STATUS_LABELS_EN: Record<string, string> = {
+    NEW: "New", FOLLOW_UP_1: "Follow Up 1", FOLLOW_UP_2: "Follow Up 2",
+    RECOVERED: "Recovered", LOST: "Lost", CANCELLED: "Cancelled",
+  };
+  const STATUS_LABELS_AR: Record<string, string> = {
+    NEW: "جديد", FOLLOW_UP_1: "متابعة 1", FOLLOW_UP_2: "متابعة 2",
+    RECOVERED: "مستعاد", LOST: "مفقود", CANCELLED: "ملغى",
+  };
+
   const columns: ColumnDef<ClientRow>[] = [
+    // ── Expand ────────────────────────────────────────────────────────
+    {
+      id: "expand",
+      header: "",
+      cell: ({ row }) => (
+        <button
+          onClick={(e) => { e.stopPropagation(); toggleExpand(row.original.id); }}
+          className={`p-1 rounded transition-colors hover:bg-muted ${expanded[row.original.id] ? "text-primary" : "text-muted-foreground"}`}
+        >
+          <ExpandIcon className={`h-3.5 w-3.5 transition-transform duration-200 ${expanded[row.original.id] ? "rotate-90" : ""}`} />
+        </button>
+      ),
+      size: 28,
+    },
     // ── Checkbox ──────────────────────────────────────────────────────
     {
       id: "select",
@@ -775,19 +889,84 @@ export default function ClientsPage() {
                   </tr>
                 ) : (
                   table.getRowModel().rows.map((row, i) => (
-                    <motion.tr
-                      key={row.id}
-                      initial={{ opacity: 0 }}
-                      animate={{ opacity: 1 }}
-                      transition={{ delay: i * 0.02 }}
-                      className="border-b border-border/50 hover:bg-muted/30 transition-colors"
-                    >
-                      {row.getVisibleCells().map((cell) => (
-                        <td key={cell.id} className="px-4 py-3">
-                          {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                        </td>
-                      ))}
-                    </motion.tr>
+                    <>
+                      <motion.tr
+                        key={row.id}
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        transition={{ delay: i * 0.02 }}
+                        className={`border-b border-border/50 hover:bg-muted/30 transition-colors cursor-pointer ${expanded[row.original.id] ? "bg-muted/20" : ""}`}
+                        onClick={() => toggleExpand(row.original.id)}
+                      >
+                        {row.getVisibleCells().map((cell) => (
+                          <td key={cell.id} className="px-4 py-3" onClick={cell.column.id === "select" ? (e) => e.stopPropagation() : undefined}>
+                            {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                          </td>
+                        ))}
+                      </motion.tr>
+                      <AnimatePresence>
+                        {expanded[row.original.id] && (
+                          <motion.tr key={`exp_${row.id}`}
+                            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+                          >
+                            <td colSpan={columns.length} className="p-0 border-b border-border/50">
+                              <div className="bg-muted/10 border-t border-dashed border-border/60 px-6 py-4">
+                                {/* Notes section */}
+                                {row.original.notes && (
+                                  <div className="mb-3 flex items-start gap-2 p-2.5 rounded-lg bg-yellow-50 dark:bg-yellow-950/20 border border-yellow-200 dark:border-yellow-800">
+                                    <StickyNote className="h-4 w-4 text-yellow-600 shrink-0 mt-0.5" />
+                                    <p className="text-sm text-yellow-900 dark:text-yellow-200">{row.original.notes}</p>
+                                  </div>
+                                )}
+                                {/* Activity log */}
+                                <div>
+                                  <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2 flex items-center gap-1">
+                                    <History className="h-3.5 w-3.5" />
+                                    {isRTL ? "سجل النشاط" : "Activity Log"}
+                                  </p>
+                                  {logLoading[row.original.id] ? (
+                                    <div className="flex items-center gap-2 py-3">
+                                      <div className="h-3 w-3 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+                                      <span className="text-xs text-muted-foreground">{isRTL ? "جاري التحميل..." : "Loading..."}</span>
+                                    </div>
+                                  ) : !logCache[row.original.id]?.length ? (
+                                    <p className="text-xs text-muted-foreground py-2">{isRTL ? "لا يوجد نشاط مسجل" : "No activity recorded yet"}</p>
+                                  ) : (
+                                    <div className="space-y-1.5 max-h-52 overflow-y-auto">
+                                      {logCache[row.original.id].map((entry) => (
+                                        <div key={entry.id} className="flex items-start gap-2 p-2 rounded-lg bg-background border border-border/60 text-xs">
+                                          {entry.type === "STATUS_CHANGE" ? (
+                                            <ArrowRight className="h-3.5 w-3.5 text-blue-500 shrink-0 mt-0.5" />
+                                          ) : (
+                                            <MessageSquare className="h-3.5 w-3.5 text-purple-500 shrink-0 mt-0.5" />
+                                          )}
+                                          <div className="flex-1 min-w-0">
+                                            {entry.type === "STATUS_CHANGE" ? (
+                                              <span className="font-medium">
+                                                {(isRTL ? STATUS_LABELS_AR : STATUS_LABELS_EN)[entry.metadata?.old_status] ?? entry.metadata?.old_status}
+                                                {" → "}
+                                                {(isRTL ? STATUS_LABELS_AR : STATUS_LABELS_EN)[entry.metadata?.new_status] ?? entry.metadata?.new_status}
+                                                {entry.metadata?.reason && <span className="text-muted-foreground ms-1">— {entry.metadata.reason}</span>}
+                                              </span>
+                                            ) : (
+                                              <span className="text-muted-foreground">{entry.metadata?.note ?? (isRTL ? "تم إضافة ملاحظة" : "Note added")}</span>
+                                            )}
+                                          </div>
+                                          <div className="shrink-0 text-right text-muted-foreground">
+                                            <div className="font-medium text-foreground">{entry.user_name}</div>
+                                            <div>{new Date(entry.created_at).toLocaleDateString(isRTL ? "ar-EG" : "en-US", { year: "numeric", month: "short", day: "numeric" })}</div>
+                                          </div>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+                            </td>
+                          </motion.tr>
+                        )}
+                      </AnimatePresence>
+                    </>
                   ))
                 )}
               </tbody>
@@ -858,7 +1037,19 @@ export default function ClientsPage() {
           client={selectedClient}
           locale={locale}
           onClose={() => { setSelectedClient(null); setDialogType(null); }}
-          onSuccess={() => { fetchClients(); setSelectedClient(null); setDialogType(null); }}
+          onSuccess={(newStatus?: string) => {
+            // Optimistically update the row immediately
+            if (newStatus) {
+              setClients((prev) => prev.map((c) =>
+                c.id === selectedClient.id ? { ...c, current_status: newStatus as ClientStatus } : c
+              ));
+            }
+            invalidateClientCache();
+            setLogCache((p) => { const n = {...p}; delete n[selectedClient.id]; return n; });
+            setExpanded((p) => ({ ...p, [selectedClient.id]: true }));
+            fetchClients(true);
+            setSelectedClient(null); setDialogType(null);
+          }}
         />
       )}
       {selectedClient && dialogType === "note" && (
@@ -866,7 +1057,12 @@ export default function ClientsPage() {
           client={selectedClient}
           locale={locale}
           onClose={() => { setSelectedClient(null); setDialogType(null); }}
-          onSuccess={() => { fetchClients(); setSelectedClient(null); setDialogType(null); }}
+          onSuccess={() => {
+            invalidateClientCache();
+            setLogCache((p) => { const n = {...p}; delete n[selectedClient.id]; return n; });
+            fetchClients(true);
+            setSelectedClient(null); setDialogType(null);
+          }}
         />
       )}
     </div>

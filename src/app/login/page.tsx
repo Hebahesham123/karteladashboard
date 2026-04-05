@@ -173,14 +173,22 @@ export default function LoginPage() {
             </Button>
           </form>
 
-          {/* Demo credentials */}
-          <div className="mt-6 p-4 rounded-xl bg-muted/50 border border-border">
-            <p className="text-xs font-medium text-muted-foreground mb-2">
-              {isRTL ? "بيانات تجريبية:" : "Demo credentials:"}
+          {/* Credentials hint */}
+          <div className="mt-6 p-4 rounded-xl bg-muted/50 border border-border space-y-2">
+            <p className="text-xs font-semibold text-muted-foreground">
+              {isRTL ? "بيانات تسجيل الدخول:" : "Login credentials:"}
             </p>
-            <div className="space-y-1 text-xs text-muted-foreground">
-              <p>{isRTL ? "مدير: admin@cartela.com / admin123" : "Admin: admin@cartela.com / admin123"}</p>
-              <p>{isRTL ? "مبيعات: sales@cartela.com / sales123" : "Sales: sales@cartela.com / sales123"}</p>
+            <div className="space-y-2 text-xs">
+              <div className="rounded-lg bg-background border border-border px-3 py-2">
+                <p className="font-semibold text-foreground mb-0.5">{isRTL ? "مدير النظام" : "Admin"}</p>
+                <p className="text-muted-foreground font-mono">admin@cartela.com</p>
+                <p className="text-muted-foreground font-mono">{isRTL ? "كلمة المرور:" : "Password:"} Admin@123456</p>
+              </div>
+              <div className="rounded-lg bg-background border border-border px-3 py-2">
+                <p className="font-semibold text-foreground mb-0.5">{isRTL ? "مندوب مبيعات" : "Salesperson"}</p>
+                <p className="text-muted-foreground">{isRTL ? "البريد: [كود]@gmail.com  (مثال: nsr2988@gmail.com)" : "Email: [code]@gmail.com  (e.g. nsr2988@gmail.com)"}</p>
+                <p className="text-muted-foreground font-mono">{isRTL ? "كلمة المرور:" : "Password:"} <span className="font-bold text-foreground">sales123</span></p>
+              </div>
             </div>
           </div>
         </motion.div>

@@ -1,9 +1,9 @@
 "use client";
 
-import { Moon, Sun, Globe, Bell, Search, Menu } from "lucide-react";
+import { Moon, Sun, Globe, Bell, Menu } from "lucide-react";
 import { useTheme } from "next-themes";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import { GlobalSearch } from "@/components/layout/GlobalSearch";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -16,7 +16,7 @@ import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 
 interface NavbarProps {
   locale: string;
-  onLocaleChange: (locale: string) => void;
+  onLocaleChange: (_: string) => void;
   user?: { full_name: string; email: string; role: string };
   onMenuToggle?: () => void;
 }
@@ -42,15 +42,7 @@ export function Navbar({ locale, onLocaleChange, user, onMenuToggle }: NavbarPro
       )}
 
       {/* Search */}
-      <div className="flex-1 max-w-md">
-        <div className="relative">
-          <Search className={`absolute top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground ${isRTL ? "right-3" : "left-3"}`} />
-          <Input
-            placeholder={isRTL ? "بحث عن عملاء، منتجات، مندوبين..." : "Search clients, products, salespersons..."}
-            className={isRTL ? "pr-9" : "pl-9"}
-          />
-        </div>
-      </div>
+      <GlobalSearch locale={locale} />
 
       <div className="flex items-center gap-2">
         {/* Language switcher */}
