@@ -234,9 +234,10 @@ export default function DashboardPage() {
       const kpiQuery = (q: any) => {
         let qq = q.gte("year", dashFrom.year).lte("year", dashTo.year);
         if (dashFrom.year === dashTo.year) qq = qq.gte("month", dashFrom.month).lte("month", dashTo.month);
-        if (spFilter)        qq = qq.eq("salesperson_id", spFilter);
-        if (selectedProduct) qq = qq.eq("top_product_name", selectedProduct);
+        if (spFilter)         qq = qq.eq("salesperson_id", spFilter);
+        if (selectedProduct)  qq = qq.eq("top_product_name", selectedProduct);
         if (selectedCustType) qq = qq.eq("customer_type", selectedCustType);
+        qq = qq.neq("customer_type", "الشركات الشقيقة");
         return qq;
       };
 
@@ -503,6 +504,7 @@ export default function DashboardPage() {
           .gte("year", dashFrom.year)
           .lte("year", dashTo.year)
           .gt("total_meters", 0)
+          .neq("customer_type", "الشركات الشقيقة")
           .range(from, to);
         if (dashFrom.year === dashTo.year) {
           q = q.gte("month", dashFrom.month).lte("month", dashTo.month);

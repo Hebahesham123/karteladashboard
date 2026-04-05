@@ -115,7 +115,9 @@ export default function SalesPage() {
     let from = 0;
     const PAGE = 1000;
     while (true) {
-      let q = supabase.from("client_monthly_metrics").select(VIEW_COLS).range(from, from + PAGE - 1);
+      let q = supabase.from("client_monthly_metrics").select(VIEW_COLS)
+                .neq("customer_type", "الشركات الشقيقة")
+                .range(from, from + PAGE - 1);
       if (year)  q = q.eq("year", year);
       if (month) q = q.eq("month", month);
       if (spId)  q = q.eq("salesperson_id", spId);
