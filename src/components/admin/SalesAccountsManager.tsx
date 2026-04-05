@@ -72,7 +72,7 @@ export function SalesAccountsManager({ locale }: Props) {
       setCreateResult({ created: data.created, linked: data.linked ?? 0, failed: data.failed });
       await load();
     } catch {
-      setCreateResult({ created: 0, skipped: 0, failed: 1 });
+      setCreateResult({ created: 0, linked: 0, failed: 1 });
     }
     setCreating(false);
   };
