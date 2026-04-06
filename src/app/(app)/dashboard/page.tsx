@@ -29,6 +29,7 @@ import {
   isExcludedFromClientLeaderboard,
 } from "@/lib/utils";
 import { dataCache } from "@/lib/dataCache";
+import { ALLOWED_CUSTOMER_TYPES, allowedCustomerTypesList, normalizeCustomerTypeFilter } from "@/lib/customerTypes";
 
 const MONTHS_AR = ["يناير","فبراير","مارس","أبريل","مايو","يونيو","يوليو","أغسطس","سبتمبر","أكتوبر","نوفمبر","ديسمبر"];
 const MONTHS_EN = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
@@ -94,7 +95,7 @@ export default function DashboardPage() {
   const [selectedProduct, setSelectedProduct] = useState<string | null>(null);
   const [selectedCustType, setSelectedCustType] = useState<string | null>(null);
   const [products, setProducts] = useState<{ id: string; name: string }[]>([]);
-  const [custTypes, setCustTypes] = useState<string[]>([]);
+  const [custTypes] = useState<string[]>(() => allowedCustomerTypesList());
   const kpiCacheRef = useRef<Map<string, { totalM: number; greenC: number; orangeC: number; redC: number; activeC: number }>>(new Map());
 
   // ── KPI date range (main dashboard filter) ───────────────────────────────
@@ -110,7 +111,7 @@ export default function DashboardPage() {
   const [salespersons, setSalespersons] = useState<{ id: string; name: string }[]>([]);
   const dashYears = Array.from({ length: 3 }, (_, i) => now.getFullYear() - i);
 
-  // Load salesperson + product + customer type lists once
+  // Load salesperson + product lists once (customer types are fixed: VIP / استهلاكي / تجاري / جملة)
   useEffect(() => {
     const supabase = createClient();
     supabase.from("salespersons").select("id, name").eq("is_active", true).order("name")
@@ -118,28 +119,10 @@ export default function DashboardPage() {
     supabase.from("products").select("id, name").eq("is_active", true).order("name")
       .then(({ data }) => setProducts((data || []).filter((p: any) =>
         !p.name.toLowerCase().includes("kartela") && !p.name.toLowerCase().includes("cartela"))));
-    // Load all distinct customer types — paginate to get past the 1000-row limit
-    const EXCLUDED = ["شركة شقيقة", "الشركات الشقيقة"];
-    const loadTypes = async () => {
-      const allTypes = new Set<string>();
-      let offset = 0;
-      const PAGE = 1000;
-      while (true) {
-        const { data, error } = await supabase
-          .from("clients")
-          .select("customer_type")
-          .not("customer_type", "is", null)
-          .neq("customer_type", "")
-          .range(offset, offset + PAGE - 1);
-        if (error || !data?.length) break;
-        data.forEach((r: any) => { if (r.customer_type) allTypes.add(r.customer_type); });
-        if (data.length < PAGE) break;
-        offset += PAGE;
-      }
-      EXCLUDED.forEach((t) => allTypes.delete(t));
-      setCustTypes(Array.from(allTypes).sort());
-    };
-    loadTypes();
+  }, []);
+
+  useEffect(() => {
+    setSelectedCustType((prev) => normalizeCustomerTypeFilter(prev));
   }, []);
 
   // ── Rankings date range (independent from main KPI filter) ───────────────
@@ -152,6 +135,7 @@ export default function DashboardPage() {
     supabase
       .from("clients")
       .select("id", { count: "exact", head: true })
+      .in("customer_type", [...ALLOWED_CUSTOMER_TYPES])
       .then((res: any) => setTotalClientCount(res?.count || 0));
   }, []);
 
@@ -169,7 +153,7 @@ export default function DashboardPage() {
     const prevEndYear  = Math.floor(prevEndAbs / 12);
     const prevEndMonth = prevEndAbs % 12 || 12;
 
-    const cacheKey = `dash_v4:${dashFrom.year}-${dashFrom.month}:${dashTo.year}-${dashTo.month}-${spFilter || "all"}-${selectedProduct || ""}-${selectedCustType || ""}`;
+    const cacheKey = `dash_v5:${dashFrom.year}-${dashFrom.month}:${dashTo.year}-${dashTo.month}-${spFilter || "all"}-${selectedProduct || ""}-${selectedCustType || ""}`;
 
     // ── Global session cache hit ──────────────────────────────────────────
     const globalCached = dataCache.get<{
@@ -248,10 +232,10 @@ export default function DashboardPage() {
       const kpiQuery = (q: any) => {
         let qq = q.gte("year", dashFrom.year).lte("year", dashTo.year);
         if (dashFrom.year === dashTo.year) qq = qq.gte("month", dashFrom.month).lte("month", dashTo.month);
-        if (spFilter)         qq = qq.eq("salesperson_id", spFilter);
-        if (selectedProduct)  qq = qq.eq("top_product_name", selectedProduct);
+        if (spFilter) qq = qq.eq("salesperson_id", spFilter);
+        if (selectedProduct) qq = qq.eq("top_product_name", selectedProduct);
+        qq = qq.in("customer_type", [...ALLOWED_CUSTOMER_TYPES]);
         if (selectedCustType) qq = qq.eq("customer_type", selectedCustType);
-        qq = qq.neq("customer_type", "شركة شقيقة").neq("customer_type", "الشركات الشقيقة");
         return qq;
       };
 
@@ -264,7 +248,11 @@ export default function DashboardPage() {
         // KPI rows from client_monthly_metrics
         safePages("client_monthly_metrics", "client_id, total_meters, total_revenue, order_count, level, month, year, customer_type", kpiQuery),
         // Total client count (head only — no rows transferred)
-        (() => { let q = supabase.from("clients").select("id", { count: "exact", head: true }); if (spFilter) q = q.eq("salesperson_id", spFilter); return q; })(),
+        (() => {
+          let q = supabase.from("clients").select("id", { count: "exact", head: true }).in("customer_type", [...ALLOWED_CUSTOMER_TYPES]);
+          if (spFilter) q = q.eq("salesperson_id", spFilter);
+          return q;
+        })(),
         // Order count for the selected period
         (() => { let q = supabase.from("orders").select("id", { count: "exact", head: true }).gte("year", dashFrom.year).lte("year", dashTo.year); if (dashFrom.year === dashTo.year) { q = q.gte("month", dashFrom.month).lte("month", dashTo.month); } if (spFilter) q = q.eq("salesperson_id", spFilter); return q; })(),
         // Trend data from salesperson_performance (has order_count — no raw orders scan!)
@@ -299,6 +287,9 @@ export default function DashboardPage() {
           kpiRows = await safePages("client_monthly_metrics", "client_id, total_meters, total_revenue, order_count, level, month, year, customer_type", (q) => {
             let qq = q.eq("year", Number(latest.year)).eq("month", Number(latest.month));
             if (spFilter) qq = qq.eq("salesperson_id", spFilter);
+            if (selectedProduct) qq = qq.eq("top_product_name", selectedProduct);
+            qq = qq.in("customer_type", [...ALLOWED_CUSTOMER_TYPES]);
+            if (selectedCustType) qq = qq.eq("customer_type", selectedCustType);
             return qq;
           });
         }
@@ -369,8 +360,10 @@ export default function DashboardPage() {
       if (isSingleMonth) {
         // Single-month mode: compare to prior month
         const prevRows = await safePages("client_monthly_metrics", "total_meters", (q) => {
-          let qq = q.eq("month", prevEndMonth).eq("year", prevEndYear);
+          let qq = q.eq("month", prevEndMonth).eq("year", prevEndYear).in("customer_type", [...ALLOWED_CUSTOMER_TYPES]);
           if (spFilter) qq = qq.eq("salesperson_id", spFilter);
+          if (selectedProduct) qq = qq.eq("top_product_name", selectedProduct);
+          if (selectedCustType) qq = qq.eq("customer_type", selectedCustType);
           return qq;
         });
         prevM = Math.round(prevRows.reduce((s: number, r: any) => s + (Number(r.total_meters) || 0), 0));
@@ -437,8 +430,8 @@ export default function DashboardPage() {
         if (dashFrom.year === dashTo.year) qq = qq.gte("month", dashFrom.month).lte("month", dashTo.month);
         if (spFilter) qq = qq.eq("salesperson_id", spFilter);
         if (selectedProduct) qq = qq.eq("top_product_name", selectedProduct);
+        qq = qq.in("customer_type", [...ALLOWED_CUSTOMER_TYPES]);
         if (selectedCustType) qq = qq.eq("customer_type", selectedCustType);
-        qq = qq.neq("customer_type", "شركة شقيقة").neq("customer_type", "الشركات الشقيقة");
         return qq;
       };
 

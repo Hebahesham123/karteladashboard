@@ -25,6 +25,7 @@ import { AddNoteDialog } from "@/components/clients/AddNoteDialog";
 import { createClient } from "@/lib/supabase/client";
 import { useStore } from "@/store/useStore";
 import { getLevelBadgeColor, getStatusColor, formatNumber } from "@/lib/utils";
+import { ALLOWED_CUSTOMER_TYPES, allowedCustomerTypesList } from "@/lib/customerTypes";
 import type { ClientStatus, OrderLevel } from "@/types/database";
 
 const MONTHS_AR = ["يناير","فبراير","مارس","أبريل","مايو","يونيو","يوليو","أغسطس","سبتمبر","أكتوبر","نوفمبر","ديسمبر"];
@@ -116,8 +117,7 @@ export default function SalesPage() {
     const PAGE = 1000;
     while (true) {
       let q = supabase.from("client_monthly_metrics").select(VIEW_COLS)
-                .neq("customer_type", "شركة شقيقة")
-                .neq("customer_type", "الشركات الشقيقة")
+                .in("customer_type", [...ALLOWED_CUSTOMER_TYPES])
                 .range(from, from + PAGE - 1);
       if (year)  q = q.eq("year", year);
       if (month) q = q.eq("month", month);
@@ -421,7 +421,7 @@ export default function SalesPage() {
   };
 
   const productOptions = Array.from(new Set(clients.map(c => c.top_product_name).filter(Boolean))).sort() as string[];
-  const typeOptions    = Array.from(new Set(clients.map(c => c.customer_type).filter(Boolean))).sort() as string[];
+  const typeOptions    = allowedCustomerTypesList();
   const activeProd     = (table.getColumn("top_product_name")?.getFilterValue() as string) ?? "";
   const activeType     = (table.getColumn("customer_type")?.getFilterValue() as string) ?? "";
 

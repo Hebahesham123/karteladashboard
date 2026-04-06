@@ -43,6 +43,7 @@ import { AddNoteDialog } from "@/components/clients/AddNoteDialog";
 import { createClient } from "@/lib/supabase/client";
 import { useStore } from "@/store/useStore";
 import { getLevelBadgeColor, getStatusColor, formatNumber, cn } from "@/lib/utils";
+import { ALLOWED_CUSTOMER_TYPES, allowedCustomerTypesList } from "@/lib/customerTypes";
 import { dataCache } from "@/lib/dataCache";
 import type { ClientStatus, OrderLevel } from "@/types/database";
 
@@ -164,13 +165,13 @@ export default function ClientsPage() {
 
       // ── 1. Fetch in parallel: view rows + salespersons + (if inactive: all clients, else: count only) ──
       const clientCountQ = (() => {
-        let q = supabase.from("clients").select("id", { count: "exact", head: true });
+        let q = supabase.from("clients").select("id", { count: "exact", head: true }).in("customer_type", [...ALLOWED_CUSTOMER_TYPES]);
         if (spFilter) q = q.eq("salesperson_id", spFilter);
         return q;
       })();
       const inactiveClientsQ = wantInactive
         ? fetchPages("clients", "id, partner_id, name, salesperson_id, current_status, customer_type", (q) => {
-            let qq = q.neq("customer_type", "شركة شقيقة").neq("customer_type", "الشركات الشقيقة");
+            let qq = q.in("customer_type", [...ALLOWED_CUSTOMER_TYPES]);
             if (spFilter) return qq.eq("salesperson_id", spFilter);
             return qq;
           })
@@ -178,9 +179,7 @@ export default function ClientsPage() {
 
       const [viewResult, spData, clientCountResult, inactiveClientsResult] = await Promise.all([
         fetchPages("client_monthly_metrics", VIEW_COLS, (q) => {
-          let qq = q.eq("month", selectedMonth).eq("year", selectedYear)
-                    .neq("customer_type", "شركة شقيقة")
-                    .neq("customer_type", "الشركات الشقيقة");
+          let qq = q.eq("month", selectedMonth).eq("year", selectedYear).in("customer_type", [...ALLOWED_CUSTOMER_TYPES]);
           if (spFilter) qq = qq.eq("salesperson_id", spFilter);
           return qq;
         }),
@@ -195,7 +194,7 @@ export default function ClientsPage() {
       if (viewRows.length === 0 && (clientCountResult as any)?.count > 50 && !viewResult.error) {
         const { data: retryData } = await supabase
           .from("client_monthly_metrics").select(VIEW_COLS)
-          .eq("month", selectedMonth).eq("year", selectedYear).range(0, 29999);
+          .eq("month", selectedMonth).eq("year", selectedYear).in("customer_type", [...ALLOWED_CUSTOMER_TYPES]).range(0, 29999);
         viewRows = retryData || [];
       }
 
@@ -651,7 +650,7 @@ export default function ClientsPage() {
   });
 
   const productOptions = Array.from(new Set(clients.map((c) => c.top_product_name).filter(Boolean))).sort() as string[];
-  const typeOptions = Array.from(new Set(clients.map((c) => c.customer_type).filter(Boolean))).sort() as string[];
+  const typeOptions = allowedCustomerTypesList();
   const activeProd = (table.getColumn("top_product_name")?.getFilterValue() as string) ?? "";
   const activeType = (table.getColumn("customer_type")?.getFilterValue() as string) ?? "";
 
