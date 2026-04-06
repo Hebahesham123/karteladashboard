@@ -6,11 +6,11 @@ import { motion, AnimatePresence } from "framer-motion";
 import {
   AreaChart, Area, PieChart, Pie, Cell,
   XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
-  BarChart, Bar, Legend,
+  BarChart, Bar, Legend, LabelList,
 } from "recharts";
 import {
   Users, TrendingUp, TrendingDown, AlertTriangle, CheckCircle,
-  XCircle, Activity, ChevronRight, Eye, Clock, ShoppingCart,
+  XCircle, Activity, ChevronRight, Clock, ShoppingCart,
 } from "lucide-react";
 import { KPICard } from "@/components/dashboard/KPICard";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -21,7 +21,7 @@ import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, Command
 import { Check, ChevronsUpDown, Filter, X } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { useStore } from "@/store/useStore";
-import { formatNumber, calculateGrowthRate, getLevelBadgeColor } from "@/lib/utils";
+import { formatNumber, calculateGrowthRate, getLevelBadgeColor, isExcludedFromSalesLeaderboard } from "@/lib/utils";
 import { dataCache } from "@/lib/dataCache";
 
 const MONTHS_AR = ["يناير","فبراير","مارس","أبريل","مايو","يونيو","يوليو","أغسطس","سبتمبر","أكتوبر","نوفمبر","ديسمبر"];
@@ -457,6 +457,7 @@ export default function DashboardPage() {
       const spAgg = new Map<string, { name: string; code: string; meters: number; clients: number; revenue: number }>();
       spRows.forEach((r: any) => {
         if (!inRange(Number(r.month), Number(r.year))) return;
+        if (isExcludedFromSalesLeaderboard(r.salesperson_name)) return;
         const key = r.salesperson_id || r.salesperson_code || r.salesperson_name;
         if (!spAgg.has(key)) {
           spAgg.set(key, { name: r.salesperson_name || r.salesperson_code || "—", code: r.salesperson_code || "", meters: 0, clients: 0, revenue: 0 });
@@ -1015,7 +1016,7 @@ export default function DashboardPage() {
 
       {/* Row 1: Clustered monthly chart + Distribution */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-3 md:gap-6">
-        {/* Clustered bars: meters, clients, orders per month */}
+        {/* Grouped bars: three columns per month; values always on top of each bar (no hover needed) */}
         <div className="lg:col-span-2 min-w-0">
           <Card className="h-full">
             <CardHeader className="pb-1.5 md:pb-2 px-3 md:px-6 pt-3 md:pt-6">
@@ -1026,12 +1027,12 @@ export default function DashboardPage() {
                   </CardTitle>
                   <p className="text-[10px] md:text-xs text-muted-foreground mt-0.5 leading-snug line-clamp-2 md:line-clamp-none">
                     {isRTL
-                      ? "ثلاثة أعمدة لكل شهر — الأزرق = الأمتار (المحور الأيمن)، الأخضر = العملاء، البنفسجي = الطلبات (المحور الأيسر)"
-                      : "Three bars per month — blue = meters (right axis), green = clients, purple = orders (left axis)"}
+                      ? "ثلاثة أعمدة بجانب بعض لكل شهر — الرقم فوق كل عمود. الأزرق = الأمتار (المحور الأيمن)، الأخضر = العملاء، البنفسجي = الطلبات (المحور الأيسر)."
+                      : "Three bars side by side per month — value above each bar. Blue = meters (right axis), green = clients, purple = orders (left axis)."}
                   </p>
                 </div>
-                <span className="text-[10px] md:text-xs text-muted-foreground flex items-center gap-0.5 md:gap-1 shrink-0 max-w-[40%] md:max-w-none justify-end">
-                  <Eye className="h-3 w-3 md:h-3.5 md:w-3.5 shrink-0 hidden sm:block" /><span className="line-clamp-2 md:line-clamp-none text-end">{t.clickChart}</span>
+                <span className="text-[10px] md:text-xs text-muted-foreground shrink-0 max-w-[40%] md:max-w-none text-end leading-tight">
+                  {isRTL ? "القيم على الأعمدة" : "Values on bars"}
                 </span>
               </div>
             </CardHeader>
@@ -1039,9 +1040,10 @@ export default function DashboardPage() {
               <div className="h-[200px] md:h-[280px] w-full">
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart
-                  data={monthlyTrend.map(d => ({ ...d, month: months[d.monthIdx] }))}
-                  margin={{ top: 8, right: 48, left: 4, bottom: 0 }}
+                  data={monthlyTrend.map((d) => ({ ...d, month: months[d.monthIdx] }))}
+                  margin={{ top: 22, right: 44, left: 2, bottom: 0 }}
                   barCategoryGap="18%"
+                  barGap={0}
                 >
                   <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" vertical={false} />
                   <XAxis dataKey="month" tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }} axisLine={false} tickLine={false} />
@@ -1049,47 +1051,82 @@ export default function DashboardPage() {
                     yAxisId="counts"
                     orientation="left"
                     tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }}
-                    axisLine={false} tickLine={false}
-                    tickFormatter={(v) => v >= 1000 ? `${(v/1000).toFixed(0)}k` : String(v)}
-                    width={38}
+                    axisLine={false}
+                    tickLine={false}
+                    tickFormatter={(v) => (v >= 1000 ? `${(v / 1000).toFixed(0)}k` : String(v))}
+                    width={36}
                   />
                   <YAxis
                     yAxisId="meters"
                     orientation="right"
                     tick={{ fontSize: 10, fill: "#3b82f6" }}
-                    axisLine={false} tickLine={false}
-                    tickFormatter={(v) => v >= 1000 ? `${(v/1000).toFixed(0)}k` : String(v)}
-                    width={42}
+                    axisLine={false}
+                    tickLine={false}
+                    tickFormatter={(v) => (v >= 1000 ? `${(v / 1000).toFixed(0)}k` : String(v))}
+                    width={40}
                   />
-                  <Tooltip content={<CustomTooltip />} />
-                  <Legend wrapperStyle={{ fontSize: "11px", paddingTop: "6px" }} />
+                  <Tooltip content={() => null} cursor={false} />
+                  <Legend wrapperStyle={{ fontSize: "11px", paddingTop: "4px" }} />
                   <Bar
                     yAxisId="meters"
                     dataKey="meters"
                     name={isRTL ? "الأمتار" : "Meters"}
                     fill="#3b82f6"
-                    fillOpacity={0.88}
-                    radius={[4, 4, 0, 0]}
-                    maxBarSize={28}
-                  />
+                    fillOpacity={0.9}
+                    radius={[4, 0, 0, 0]}
+                  >
+                    <LabelList
+                      dataKey="meters"
+                      position="top"
+                      offset={4}
+                      className="tabular-nums"
+                      style={{ fontSize: 9, fontWeight: 700, fill: "hsl(var(--foreground))" }}
+                      formatter={(v: any) => {
+                        const n = Number(v);
+                        return n > 0 ? formatNumber(n) : "";
+                      }}
+                    />
+                  </Bar>
                   <Bar
                     yAxisId="counts"
                     dataKey="clients"
                     name={isRTL ? "عدد العملاء" : "Clients"}
                     fill="#10b981"
-                    fillOpacity={0.88}
-                    radius={[4, 4, 0, 0]}
-                    maxBarSize={28}
-                  />
+                    fillOpacity={0.9}
+                    radius={[0, 0, 0, 0]}
+                  >
+                    <LabelList
+                      dataKey="clients"
+                      position="top"
+                      offset={4}
+                      className="tabular-nums"
+                      style={{ fontSize: 9, fontWeight: 700, fill: "hsl(var(--foreground))" }}
+                      formatter={(v: any) => {
+                        const n = Number(v);
+                        return n > 0 ? formatNumber(n) : "";
+                      }}
+                    />
+                  </Bar>
                   <Bar
                     yAxisId="counts"
                     dataKey="orders"
                     name={isRTL ? "عدد الطلبات" : "Orders"}
                     fill="#8b5cf6"
-                    fillOpacity={0.88}
-                    radius={[4, 4, 0, 0]}
-                    maxBarSize={28}
-                  />
+                    fillOpacity={0.9}
+                    radius={[0, 4, 0, 0]}
+                  >
+                    <LabelList
+                      dataKey="orders"
+                      position="top"
+                      offset={4}
+                      className="tabular-nums"
+                      style={{ fontSize: 9, fontWeight: 700, fill: "hsl(var(--foreground))" }}
+                      formatter={(v: any) => {
+                        const n = Number(v);
+                        return n > 0 ? formatNumber(n) : "";
+                      }}
+                    />
+                  </Bar>
                 </BarChart>
               </ResponsiveContainer>
               </div>

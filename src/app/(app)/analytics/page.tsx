@@ -19,7 +19,7 @@ import { Button } from "@/components/ui/button";
 import { FilterBar } from "@/components/shared/FilterBar";
 import { createClient } from "@/lib/supabase/client";
 import { useStore } from "@/store/useStore";
-import { formatNumber, calculateGrowthRate } from "@/lib/utils";
+import { formatNumber, calculateGrowthRate, isExcludedFromSalesLeaderboard } from "@/lib/utils";
 
 const COLORS = ["#3b82f6","#10b981","#f59e0b","#ef4444","#8b5cf6","#06b6d4","#f97316","#84cc16","#ec4899","#6366f1"];
 const MONTHS_AR = ["يناير","فبراير","مارس","أبريل","مايو","يونيو","يوليو","أغسطس","سبتمبر","أكتوبر","نوفمبر","ديسمبر"];
@@ -115,6 +115,7 @@ export default function AnalyticsPage() {
       for (const s of (sales || []) as any[]) {
         const key = s.salesperson_id as string;
         if (!key) continue;
+        if (isExcludedFromSalesLeaderboard(s.salesperson_name)) continue;
         if (!spAgg.has(key)) spAgg.set(key, { id: key, name: s.salesperson_name, code: s.salesperson_code, meters: 0, clients: 0, products: 0 });
         const e = spAgg.get(key)!;
         e.meters   += Math.round(Number(s.total_meters)  || 0);

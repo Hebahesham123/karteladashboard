@@ -61,6 +61,12 @@ export function getStatusColor(status: ClientStatus): string {
   }
 }
 
+/** Exclude from salesperson meter rankings (e.g. internal staff not a field rep). Matched on first name token. */
+export function isExcludedFromSalesLeaderboard(displayName: string): boolean {
+  const first = (displayName || "").trim().split(/\s+/)[0]?.toLowerCase() ?? "";
+  return first === "aml";
+}
+
 export function formatNumber(num: number, decimals = 1): string {
   if (num >= 1000000) {
     const v = num / 1000000;
