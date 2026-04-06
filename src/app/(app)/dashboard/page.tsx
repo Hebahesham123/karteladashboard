@@ -21,12 +21,19 @@ import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, Command
 import { Check, ChevronsUpDown, Filter, X } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { useStore } from "@/store/useStore";
-import { formatNumber, calculateGrowthRate, getLevelBadgeColor, isExcludedFromSalesLeaderboard } from "@/lib/utils";
+import {
+  formatNumber,
+  calculateGrowthRate,
+  getLevelBadgeColor,
+  isExcludedFromSalesLeaderboard,
+  isExcludedFromClientLeaderboard,
+} from "@/lib/utils";
 import { dataCache } from "@/lib/dataCache";
 
 const MONTHS_AR = ["يناير","فبراير","مارس","أبريل","مايو","يونيو","يوليو","أغسطس","سبتمبر","أكتوبر","نوفمبر","ديسمبر"];
 const MONTHS_EN = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
 const COLORS = ["#3b82f6","#10b981","#f59e0b","#ef4444","#8b5cf6","#06b6d4","#f97316","#84cc16","#ec4899","#6366f1"];
+const PIE_LABEL_RAD = Math.PI / 180;
 
 const CustomTooltip = ({ active, payload, label }: any) => {
   if (!active || !payload?.length) return null;
@@ -424,6 +431,17 @@ export default function DashboardPage() {
         return v >= startVal && v <= endVal;
       };
 
+      /** Same filters as main KPI `kpiQuery` so rankings match the dashboard. */
+      const rankingCmmQuery = (q: any) => {
+        let qq = q.gte("year", dashFrom.year).lte("year", dashTo.year);
+        if (dashFrom.year === dashTo.year) qq = qq.gte("month", dashFrom.month).lte("month", dashTo.month);
+        if (spFilter) qq = qq.eq("salesperson_id", spFilter);
+        if (selectedProduct) qq = qq.eq("top_product_name", selectedProduct);
+        if (selectedCustType) qq = qq.eq("customer_type", selectedCustType);
+        qq = qq.neq("customer_type", "شركة شقيقة").neq("customer_type", "الشركات الشقيقة");
+        return qq;
+      };
+
       const fetchAllPages = async (buildQuery: (from: number, to: number) => any) => {
         const PAGE = 1000;
         const all: any[] = [];
@@ -438,89 +456,118 @@ export default function DashboardPage() {
         return all;
       };
 
-      // ── 1. Salesperson ranking ─────────────────────────────────────────────
-      const spRows = await fetchAllPages((from, to) => {
-        let q = supabase
-          .from("salesperson_performance")
-          .select("salesperson_id, salesperson_name, salesperson_code, total_meters, total_revenue, active_clients, month, year")
-          .gte("year", dashFrom.year)
-          .lte("year", dashTo.year)
-          .gt("total_meters", 0)
-          .range(from, to);
-        if (dashFrom.year === dashTo.year) {
-          q = q.gte("month", dashFrom.month).lte("month", dashTo.month);
-        }
-        if (spFilter) q = q.eq("salesperson_id", spFilter);
-        return q;
-      });
+      // ── 1. Salesperson ranking (same filtered universe as KPIs via client_monthly_metrics) ──
+      const spCmmRows = await fetchAllPages((from, to) =>
+        rankingCmmQuery(
+          supabase
+            .from("client_monthly_metrics")
+            .select("client_id, salesperson_id, salesperson_name, salesperson_code, total_meters, total_revenue, month, year")
+            .gt("total_meters", 0)
+            .range(from, to),
+        ),
+      );
 
       const spAgg = new Map<string, { name: string; code: string; meters: number; clients: number; revenue: number }>();
-      spRows.forEach((r: any) => {
+      const spClientSets = new Map<string, Set<string>>();
+      spCmmRows.forEach((r: any) => {
         if (!inRange(Number(r.month), Number(r.year))) return;
+        const sid = r.salesperson_id as string | null;
+        if (!sid) return;
         if (isExcludedFromSalesLeaderboard(r.salesperson_name)) return;
-        const key = r.salesperson_id || r.salesperson_code || r.salesperson_name;
-        if (!spAgg.has(key)) {
-          spAgg.set(key, { name: r.salesperson_name || r.salesperson_code || "—", code: r.salesperson_code || "", meters: 0, clients: 0, revenue: 0 });
+        if (!spAgg.has(sid)) {
+          spAgg.set(sid, {
+            name: r.salesperson_name || r.salesperson_code || "—",
+            code: r.salesperson_code || "",
+            meters: 0,
+            clients: 0,
+            revenue: 0,
+          });
+          spClientSets.set(sid, new Set());
         }
-        const e = spAgg.get(key)!;
-        e.meters  += Number(r.total_meters)   || 0;
-        e.clients += Number(r.active_clients) || 0;
-        e.revenue += Number(r.total_revenue)  || 0;
+        const e = spAgg.get(sid)!;
+        e.meters += Number(r.total_meters) || 0;
+        e.revenue += Number(r.total_revenue) || 0;
+        spClientSets.get(sid)!.add(r.client_id as string);
+      });
+      spAgg.forEach((e, sid) => {
+        e.clients = spClientSets.get(sid)?.size ?? 0;
       });
       setLeaderboard(Array.from(spAgg.values()).sort((a, b) => b.meters - a.meters).slice(0, 15));
 
       // ── 2. Product ranking ─────────────────────────────────────────────────
-      const prodRows = await fetchAllPages((from, to) => {
-        let q = supabase
-          .from("product_analytics")
-          .select("product_name, total_meters, total_revenue, unique_clients, month, year")
-          .gte("year", dashFrom.year)
-          .lte("year", dashTo.year)
-          .gt("total_meters", 0)
-          .is("salesperson_id", null)
-          .range(from, to);
-        if (dashFrom.year === dashTo.year) {
-          q = q.gte("month", dashFrom.month).lte("month", dashTo.month);
-        }
-        return q;
-      });
+      const useCmmForProducts = !!(selectedCustType || selectedProduct);
+      let productRanking: { name: string; qty: number; revenue: number; clients: number }[] = [];
 
-      const prodAgg = new Map<string, { qty: number; revenue: number; clients: number }>();
-      prodRows.forEach((r: any) => {
-        if (!inRange(Number(r.month), Number(r.year))) return;
-        const name = r.product_name as string;
-        if (!name) return;
-        const prev = prodAgg.get(name) || { qty: 0, revenue: 0, clients: 0 };
-        prodAgg.set(name, {
-          qty:     prev.qty     + (Number(r.total_meters)   || 0),
-          revenue: prev.revenue + (Number(r.total_revenue)  || 0),
-          clients: prev.clients + (Number(r.unique_clients) || 0),
+      if (useCmmForProducts) {
+        const cmmProdRows = await fetchAllPages((from, to) =>
+          rankingCmmQuery(
+            supabase
+              .from("client_monthly_metrics")
+              .select("client_id, top_product_name, total_meters, total_revenue, month, year")
+              .gt("total_meters", 0)
+              .range(from, to),
+          ),
+        );
+        const prodAgg = new Map<string, { qty: number; revenue: number; clients: Set<string> }>();
+        cmmProdRows.forEach((r: any) => {
+          if (!inRange(Number(r.month), Number(r.year))) return;
+          const name = r.top_product_name as string;
+          if (!name) return;
+          if (!prodAgg.has(name)) prodAgg.set(name, { qty: 0, revenue: 0, clients: new Set() });
+          const p = prodAgg.get(name)!;
+          p.qty += Number(r.total_meters) || 0;
+          p.revenue += Number(r.total_revenue) || 0;
+          p.clients.add(r.client_id as string);
         });
-      });
-      setTopProducts(
-        Array.from(prodAgg.entries())
-          .map(([name, v]) => ({ name, qty: v.qty, revenue: v.revenue, clients: v.clients }))
-          .sort((a, b) => b.qty - a.qty)
-          .slice(0, 10)
-      );
+        productRanking = Array.from(prodAgg.entries()).map(([name, v]) => ({
+          name,
+          qty: v.qty,
+          revenue: v.revenue,
+          clients: v.clients.size,
+        }));
+      } else {
+        const prodRows = await fetchAllPages((from, to) => {
+          let q = supabase
+            .from("product_analytics")
+            .select("product_name, total_meters, total_revenue, unique_clients, month, year, salesperson_id")
+            .gte("year", dashFrom.year)
+            .lte("year", dashTo.year)
+            .gt("total_meters", 0)
+            .range(from, to);
+          if (dashFrom.year === dashTo.year) {
+            q = q.gte("month", dashFrom.month).lte("month", dashTo.month);
+          }
+          if (spFilter) q = q.eq("salesperson_id", spFilter);
+          else q = q.is("salesperson_id", null);
+          return q;
+        });
+        const prodAgg = new Map<string, { qty: number; revenue: number; clients: number }>();
+        prodRows.forEach((r: any) => {
+          if (!inRange(Number(r.month), Number(r.year))) return;
+          const name = r.product_name as string;
+          if (!name) return;
+          const prev = prodAgg.get(name) || { qty: 0, revenue: 0, clients: 0 };
+          prodAgg.set(name, {
+            qty: prev.qty + (Number(r.total_meters) || 0),
+            revenue: prev.revenue + (Number(r.total_revenue) || 0),
+            clients: prev.clients + (Number(r.unique_clients) || 0),
+          });
+        });
+        productRanking = Array.from(prodAgg.entries()).map(([name, v]) => ({ name, ...v }));
+      }
+
+      setTopProducts(productRanking.sort((a, b) => b.qty - a.qty).slice(0, 10));
 
       // ── 3. Client ranking ──────────────────────────────────────────────────
-      const clientRankRows = await fetchAllPages((from, to) => {
-        let q = supabase
-          .from("client_monthly_metrics")
-          .select("client_id, client_name, partner_id, total_meters, total_revenue, month, year")
-          .gte("year", dashFrom.year)
-          .lte("year", dashTo.year)
-          .gt("total_meters", 0)
-          .neq("customer_type", "شركة شقيقة")
-          .neq("customer_type", "الشركات الشقيقة")
-          .range(from, to);
-        if (dashFrom.year === dashTo.year) {
-          q = q.gte("month", dashFrom.month).lte("month", dashTo.month);
-        }
-        if (spFilter) q = q.eq("salesperson_id", spFilter);
-        return q;
-      });
+      const clientRankRows = await fetchAllPages((from, to) =>
+        rankingCmmQuery(
+          supabase
+            .from("client_monthly_metrics")
+            .select("client_id, client_name, partner_id, total_meters, total_revenue, month, year")
+            .gt("total_meters", 0)
+            .range(from, to),
+        ),
+      );
 
       const clientAgg = new Map<string, { name: string; partner_id: string; meters: number; revenue: number }>();
       clientRankRows.forEach((r: any) => {
@@ -537,6 +584,7 @@ export default function DashboardPage() {
       });
       setTopClients(
         Array.from(clientAgg.values())
+          .filter((c) => !isExcludedFromClientLeaderboard(c.name))
           .sort((a, b) => b.meters - a.meters)
           .slice(0, 10)
       );
@@ -545,7 +593,7 @@ export default function DashboardPage() {
     } finally {
       setRankLoading(false);
     }
-  }, [dashFrom, dashTo, filters.selectedSalesperson, salespersonId]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [dashFrom, dashTo, filters.selectedSalesperson, salespersonId, selectedProduct, selectedCustType]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => { fetchRankings(); }, [fetchRankings]);
 
@@ -1147,13 +1195,42 @@ export default function DashboardPage() {
           <CardContent className="px-3 pb-3 md:px-6 md:pb-6">
             <div className="h-[160px] md:h-[200px] w-full">
             <ResponsiveContainer width="100%" height="100%">
-              <PieChart>
+              <PieChart margin={{ top: 10, right: 10, bottom: 10, left: 10 }}>
                 <Pie
                   data={pieData}
                   cx="50%" cy="50%"
                   innerRadius={44}
                   outerRadius={72}
                   dataKey="value"
+                  labelLine={false}
+                  label={(props: any) => {
+                    const v = Number(props.value);
+                    if (!v || v < 1) return null;
+                    const { cx, cy, midAngle, innerRadius: ir, outerRadius: or } = props;
+                    const innerR = Number(ir);
+                    const outerR = Number(or);
+                    const radius = innerR + (outerR - innerR) * 0.55;
+                    const x = cx + radius * Math.cos(-midAngle * PIE_LABEL_RAD);
+                    const y = cy + radius * Math.sin(-midAngle * PIE_LABEL_RAD);
+                    const pct = Math.round((Number(props.percent) || 0) * 100);
+                    const fs = pct < 5 ? 8 : pct < 12 ? 9 : 10;
+                    const line = pct > 0 ? `${v.toLocaleString()} (${pct}%)` : v.toLocaleString();
+                    return (
+                      <text
+                        x={x}
+                        y={y}
+                        textAnchor="middle"
+                        dominantBaseline="central"
+                        fill="#ffffff"
+                        fontSize={fs}
+                        fontWeight={700}
+                        className="tabular-nums"
+                        style={{ paintOrder: "stroke fill", stroke: "rgba(0,0,0,0.5)", strokeWidth: 2.5 }}
+                      >
+                        {line}
+                      </text>
+                    );
+                  }}
                   onClick={(data: any) => {
                     const levelMap: Record<string, string> = {
                       [isRTL ? "طلبات ≥ 100م"              : "Orders ≥ 100m"]:           "GREEN",

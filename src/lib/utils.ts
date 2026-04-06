@@ -67,6 +67,15 @@ export function isExcludedFromSalesLeaderboard(displayName: string): boolean {
   return first === "aml";
 }
 
+/** Exclude from client meter rankings (aggregate / non-client lines that should not appear as a ranked customer). */
+export function isExcludedFromClientLeaderboard(clientName: string): boolean {
+  const n = (clientName || "").replace(/\s+/g, " ").trim();
+  if (!n) return false;
+  if (n.includes("اكسسوار ستارة") && n.includes("تجزئة")) return true;
+  if (/curtain\s*accessory/i.test(n) && /retail|client/i.test(n)) return true;
+  return false;
+}
+
 export function formatNumber(num: number, decimals = 1): string {
   if (num >= 1000000) {
     const v = num / 1000000;
