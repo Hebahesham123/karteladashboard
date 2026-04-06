@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback, useRef } from "react";
+import { useEffect, useState, useCallback, useRef, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
 import {
@@ -24,17 +24,55 @@ import { useStore } from "@/store/useStore";
 import {
   formatNumber,
   calculateGrowthRate,
-  getLevelBadgeColor,
   isExcludedFromSalesLeaderboard,
   isExcludedFromClientLeaderboard,
+  cn,
 } from "@/lib/utils";
 import { dataCache } from "@/lib/dataCache";
-import { ALLOWED_CUSTOMER_TYPES, allowedCustomerTypesList, normalizeCustomerTypeFilter } from "@/lib/customerTypes";
+import {
+  ALLOWED_CUSTOMER_TYPES,
+  allowedCustomerTypesList,
+  isAllowedCustomerType,
+} from "@/lib/customerTypes";
 
 const MONTHS_AR = ["يناير","فبراير","مارس","أبريل","مايو","يونيو","يوليو","أغسطس","سبتمبر","أكتوبر","نوفمبر","ديسمبر"];
 const MONTHS_EN = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
 const COLORS = ["#3b82f6","#10b981","#f59e0b","#ef4444","#8b5cf6","#06b6d4","#f97316","#84cc16","#ec4899","#6366f1"];
-const PIE_LABEL_RAD = Math.PI / 180;
+
+/** Outside slice labels so every segment shows count + % (readable on dark/light). */
+function PieSliceOutsideLabel(props: any) {
+  const { cx, cy, midAngle, innerRadius, outerRadius, percent, value } = props;
+  const v = Number(value);
+  if (!v || v < 1) return null;
+  const ir = Number(innerRadius);
+  const or = Number(outerRadius);
+  const RAD = Math.PI / 180;
+  const sin = Math.sin(-RAD * midAngle);
+  const cos = Math.cos(-RAD * midAngle);
+  const x0 = cx + (ir + (or - ir) * 0.5) * cos;
+  const y0 = cy + (ir + (or - ir) * 0.5) * sin;
+  const x = cx + (or + 14) * cos;
+  const y = cy + (or + 14) * sin;
+  const p = Math.round((Number(percent) || 0) * 100);
+  const line = p > 0 ? `${v.toLocaleString()} (${p}%)` : v.toLocaleString();
+  return (
+    <g>
+      <path d={`M${x0},${y0}L${x},${y}`} stroke="hsl(var(--muted-foreground))" fill="none" strokeWidth={1} opacity={0.85} />
+      <text
+        x={x}
+        y={y}
+        fill="hsl(var(--foreground))"
+        textAnchor={cos >= 0 ? "start" : "end"}
+        dominantBaseline="central"
+        fontSize={10}
+        fontWeight={600}
+        className="tabular-nums"
+      >
+        {line}
+      </text>
+    </g>
+  );
+}
 
 const CustomTooltip = ({ active, payload, label }: any) => {
   if (!active || !payload?.length) return null;
@@ -75,6 +113,13 @@ export default function DashboardPage() {
   const [orderCount, setOrderCount] = useState(0);
   const [totalRevenue, setTotalRevenue] = useState(0);
   const [prevMeters, setPrevMeters] = useState(0);
+  const [prevRevenue, setPrevRevenue] = useState(0);
+  const [prevOrderCount, setPrevOrderCount] = useState(0);
+  const [prevMonthlyClients, setPrevMonthlyClients] = useState(0);
+  const [prevGreenLevel, setPrevGreenLevel] = useState(0);
+  const [prevOrangeLevel, setPrevOrangeLevel] = useState(0);
+  const [prevRedLevel, setPrevRedLevel] = useState(0);
+  const [prevDormant, setPrevDormant] = useState(0);
   const [totalMetersValue, setTotalMetersValue] = useState(0);
   const [greenCount, setGreenCount] = useState(0);
   const [greenMeters, setGreenMeters] = useState(0);
@@ -88,12 +133,16 @@ export default function DashboardPage() {
   const [totalClientCount, setTotalClientCount] = useState(0);
   const [monthlyClientCount, setMonthlyClientCount] = useState(0);
   const [hasLoadedOnce, setHasLoadedOnce] = useState(false);
-  const [leaderboard, setLeaderboard] = useState<{ name: string; code: string; meters: number; clients: number; revenue: number }[]>([]);
+  const [leaderboard, setLeaderboard] = useState<{ id: string; name: string; code: string; meters: number; clients: number; revenue: number }[]>([]);
   const [topProducts, setTopProducts] = useState<{ name: string; qty: number; revenue: number; clients: number }[]>([]);
-  const [topClients, setTopClients] = useState<{ name: string; partner_id: string; meters: number; revenue: number }[]>([]);
-  // Filters
-  const [selectedProduct, setSelectedProduct] = useState<string | null>(null);
-  const [selectedCustType, setSelectedCustType] = useState<string | null>(null);
+  const [topClients, setTopClients] = useState<{ client_id: string; name: string; partner_id: string; meters: number; revenue: number }[]>([]);
+  // Filters (multiselect)
+  const [selectedProductNames, setSelectedProductNames] = useState<string[]>([]);
+  const [selectedClientIds, setSelectedClientIds] = useState<string[]>([]);
+  const [selectedCustTypes, setSelectedCustTypes] = useState<string[]>([]);
+  const [clientOpen, setClientOpen] = useState(false);
+  const [custTypeOpen, setCustTypeOpen] = useState(false);
+  const [clientPickerOptions, setClientPickerOptions] = useState<{ id: string; name: string; partner_id: string }[]>([]);
   const [products, setProducts] = useState<{ id: string; name: string }[]>([]);
   const [custTypes] = useState<string[]>(() => allowedCustomerTypesList());
   const kpiCacheRef = useRef<Map<string, { totalM: number; greenC: number; orangeC: number; redC: number; activeC: number }>>(new Map());
@@ -122,8 +171,21 @@ export default function DashboardPage() {
   }, []);
 
   useEffect(() => {
-    setSelectedCustType((prev) => normalizeCustomerTypeFilter(prev));
+    setSelectedCustTypes((prev) => prev.filter((t) => isAllowedCustomerType(t)));
   }, []);
+
+  useEffect(() => {
+    const supabase = createClient();
+    const spFilter = salespersonId || filters.selectedSalesperson;
+    let q = supabase
+      .from("clients")
+      .select("id, name, partner_id")
+      .in("customer_type", [...ALLOWED_CUSTOMER_TYPES])
+      .order("name")
+      .limit(1000);
+    if (spFilter) q = q.eq("salesperson_id", spFilter);
+    q.then(({ data }) => setClientPickerOptions((data as { id: string; name: string; partner_id: string }[]) || []));
+  }, [filters.selectedSalesperson, salespersonId]);
 
   // ── Rankings date range (independent from main KPI filter) ───────────────
 
@@ -153,12 +215,17 @@ export default function DashboardPage() {
     const prevEndYear  = Math.floor(prevEndAbs / 12);
     const prevEndMonth = prevEndAbs % 12 || 12;
 
-    const cacheKey = `dash_v5:${dashFrom.year}-${dashFrom.month}:${dashTo.year}-${dashTo.month}-${spFilter || "all"}-${selectedProduct || ""}-${selectedCustType || ""}`;
+    const prodKey = [...selectedProductNames].sort().join("|");
+    const cliKey = [...selectedClientIds].sort().join("|");
+    const custKey = [...selectedCustTypes].sort().join("|");
+    const cacheKey = `dash_v6:${dashFrom.year}-${dashFrom.month}:${dashTo.year}-${dashTo.month}-${spFilter || "all"}-${prodKey}-${cliKey}-${custKey}`;
 
     // ── Global session cache hit ──────────────────────────────────────────
     const globalCached = dataCache.get<{
       totalM: number; greenC: number; orangeC: number; redC: number; activeC: number;
-      monthlyC: number; prevM: number; trend: any[]; totalClients: number; orderCount?: number;
+      monthlyC: number; prevM: number; prevR?: number; prevO?: number; prevMc?: number;
+      prevLg?: number; prevLo?: number; prevLr?: number; prevDorm?: number;
+      trend: any[]; totalClients: number; orderCount?: number; totalRevenue?: number;
     }>(cacheKey);
     if (globalCached && !forceRefresh) {
       setTotalMetersValue(globalCached.totalM);
@@ -169,8 +236,16 @@ export default function DashboardPage() {
       setMonthlyClientCount(globalCached.monthlyC || globalCached.activeC);
       setTotalClientCount(globalCached.totalClients);
       setPrevMeters(globalCached.prevM);
+      setPrevRevenue(globalCached.prevR ?? 0);
+      setPrevOrderCount(globalCached.prevO ?? 0);
+      setPrevMonthlyClients(globalCached.prevMc ?? 0);
+      setPrevGreenLevel(globalCached.prevLg ?? 0);
+      setPrevOrangeLevel(globalCached.prevLo ?? 0);
+      setPrevRedLevel(globalCached.prevLr ?? 0);
+      setPrevDormant(globalCached.prevDorm ?? 0);
       setMonthlyTrend(globalCached.trend);
       if (globalCached.orderCount !== undefined) setOrderCount(globalCached.orderCount);
+      if (globalCached.totalRevenue !== undefined) setTotalRevenue(globalCached.totalRevenue);
       setLoading(false);
       setHasLoadedOnce(true);
       return;
@@ -229,13 +304,18 @@ export default function DashboardPage() {
       };
 
       // ── 1+2. Run KPI rows, client count, order count AND trend in parallel ─
+      const custTypesForFilter =
+        selectedCustTypes.length > 0
+          ? selectedCustTypes.filter((t) => (ALLOWED_CUSTOMER_TYPES as readonly string[]).includes(t))
+          : [...ALLOWED_CUSTOMER_TYPES];
+
       const kpiQuery = (q: any) => {
         let qq = q.gte("year", dashFrom.year).lte("year", dashTo.year);
         if (dashFrom.year === dashTo.year) qq = qq.gte("month", dashFrom.month).lte("month", dashTo.month);
         if (spFilter) qq = qq.eq("salesperson_id", spFilter);
-        if (selectedProduct) qq = qq.eq("top_product_name", selectedProduct);
-        qq = qq.in("customer_type", [...ALLOWED_CUSTOMER_TYPES]);
-        if (selectedCustType) qq = qq.eq("customer_type", selectedCustType);
+        qq = qq.in("customer_type", custTypesForFilter);
+        if (selectedProductNames.length > 0) qq = qq.in("top_product_name", selectedProductNames);
+        if (selectedClientIds.length > 0) qq = qq.in("client_id", selectedClientIds);
         return qq;
       };
 
@@ -243,30 +323,34 @@ export default function DashboardPage() {
         kpiRowsRaw,
         countResult,
         orderCountRes,
-        trendRowsRaw,
       ] = await Promise.all([
         // KPI rows from client_monthly_metrics
         safePages("client_monthly_metrics", "client_id, total_meters, total_revenue, order_count, level, month, year, customer_type", kpiQuery),
         // Total client count (head only — no rows transferred)
         (() => {
-          let q = supabase.from("clients").select("id", { count: "exact", head: true }).in("customer_type", [...ALLOWED_CUSTOMER_TYPES]);
+          let q = supabase.from("clients").select("id", { count: "exact", head: true }).in("customer_type", custTypesForFilter);
           if (spFilter) q = q.eq("salesperson_id", spFilter);
+          if (selectedClientIds.length > 0) q = q.in("id", selectedClientIds);
           return q;
         })(),
-        // Order count for the selected period
-        (() => { let q = supabase.from("orders").select("id", { count: "exact", head: true }).gte("year", dashFrom.year).lte("year", dashTo.year); if (dashFrom.year === dashTo.year) { q = q.gte("month", dashFrom.month).lte("month", dashTo.month); } if (spFilter) q = q.eq("salesperson_id", spFilter); return q; })(),
-        // Trend data from salesperson_performance (has order_count — no raw orders scan!)
-        safePages("salesperson_performance", "month, year, total_meters, total_revenue, active_clients, order_count", (q) => {
-          let qq = q.eq("year", dashTo.year);
-          if (spFilter) qq = qq.eq("salesperson_id", spFilter);
-          return qq;
-        }),
+        // Order count for the selected period (client filter only; product filter uses KPI row sum below)
+        (() => {
+          let q = supabase
+            .from("orders")
+            .select("id", { count: "exact", head: true })
+            .gte("year", dashFrom.year)
+            .lte("year", dashTo.year);
+          if (dashFrom.year === dashTo.year) q = q.gte("month", dashFrom.month).lte("month", dashTo.month);
+          if (spFilter) q = q.eq("salesperson_id", spFilter);
+          if (selectedClientIds.length > 0) q = q.in("client_id", selectedClientIds);
+          return q;
+        })(),
       ]);
 
       let kpiRows = kpiRowsRaw;
       const denominatorCount = (countResult as any)?.count || 0;
       setTotalClientCount(denominatorCount);
-      setOrderCount((orderCountRes as any)?.count || 0);
+      let orderCountFinal = (orderCountRes as any)?.count || 0;
 
       // Client-side guard for exact boundaries (needed for cross-year ranges)
       kpiRows = kpiRows.filter((r: any) => inRange(Number(r.month), Number(r.year)));
@@ -287,9 +371,9 @@ export default function DashboardPage() {
           kpiRows = await safePages("client_monthly_metrics", "client_id, total_meters, total_revenue, order_count, level, month, year, customer_type", (q) => {
             let qq = q.eq("year", Number(latest.year)).eq("month", Number(latest.month));
             if (spFilter) qq = qq.eq("salesperson_id", spFilter);
-            if (selectedProduct) qq = qq.eq("top_product_name", selectedProduct);
-            qq = qq.in("customer_type", [...ALLOWED_CUSTOMER_TYPES]);
-            if (selectedCustType) qq = qq.eq("customer_type", selectedCustType);
+            qq = qq.in("customer_type", custTypesForFilter);
+            if (selectedProductNames.length > 0) qq = qq.in("top_product_name", selectedProductNames);
+            if (selectedClientIds.length > 0) qq = qq.in("client_id", selectedClientIds);
             return qq;
           });
         }
@@ -355,46 +439,117 @@ export default function DashboardPage() {
       setMonthlyClientCount(consistentMonthly);
       kpiCacheRef.current.set(cacheKey, { totalM: Math.round(totalM), greenC: greenC_final, orangeC: orangeC_final, redC, activeC });
 
-      // ── 5. Previous-period meters (for trend arrow) ───────────────────────
+      // ── 5. Previous month (single-month only): same filters → compare all KPI boxes
       let prevM = 0;
+      let prevR = 0;
+      let prevO = 0;
+      let prevMc = 0;
+      let prevLg = 0;
+      let prevLo = 0;
+      let prevLr = 0;
+      let prevDorm = 0;
       if (isSingleMonth) {
-        // Single-month mode: compare to prior month
-        const prevRows = await safePages("client_monthly_metrics", "total_meters", (q) => {
-          let qq = q.eq("month", prevEndMonth).eq("year", prevEndYear).in("customer_type", [...ALLOWED_CUSTOMER_TYPES]);
-          if (spFilter) qq = qq.eq("salesperson_id", spFilter);
-          if (selectedProduct) qq = qq.eq("top_product_name", selectedProduct);
-          if (selectedCustType) qq = qq.eq("customer_type", selectedCustType);
-          return qq;
+        const prevKpiRows = await safePages(
+          "client_monthly_metrics",
+          "client_id, total_meters, total_revenue, order_count, level, month, year, customer_type",
+          (q) => {
+            let qq = q.eq("month", prevEndMonth).eq("year", prevEndYear).in("customer_type", custTypesForFilter);
+            if (spFilter) qq = qq.eq("salesperson_id", spFilter);
+            if (selectedProductNames.length > 0) qq = qq.in("top_product_name", selectedProductNames);
+            if (selectedClientIds.length > 0) qq = qq.in("client_id", selectedClientIds);
+            return qq;
+          },
+        );
+        prevM = Math.round(prevKpiRows.reduce((s: number, r: any) => s + (Number(r.total_meters) || 0), 0));
+        prevR = Math.round(prevKpiRows.reduce((s: number, r: any) => s + (Number(r.total_revenue) || 0), 0));
+        const seenPrev = new Set<string>();
+        let g = 0, o = 0, rd = 0;
+        prevKpiRows.forEach((r: any) => {
+          if (seenPrev.has(r.client_id)) return;
+          seenPrev.add(r.client_id);
+          const lv = r.level as string;
+          if (lv === "GREEN") g++;
+          else if (lv === "ORANGE") o++;
+          else if (lv === "RED") rd++;
         });
-        prevM = Math.round(prevRows.reduce((s: number, r: any) => s + (Number(r.total_meters) || 0), 0));
+        prevMc = g + o + rd;
+        prevLg = g;
+        prevLo = o;
+        prevLr = rd;
+        prevDorm = Math.max(0, denominatorCount - prevMc);
+        if (selectedProductNames.length > 0) {
+          prevO = prevKpiRows.reduce((s: number, r: any) => s + (Number(r.order_count) || 0), 0);
+        } else {
+          let oq = supabase
+            .from("orders")
+            .select("id", { count: "exact", head: true })
+            .eq("month", prevEndMonth)
+            .eq("year", prevEndYear);
+          if (spFilter) oq = oq.eq("salesperson_id", spFilter);
+          if (selectedClientIds.length > 0) oq = oq.in("client_id", selectedClientIds);
+          const { count } = await oq;
+          prevO = (count as number) || 0;
+        }
       }
       setPrevMeters(prevM);
+      setPrevRevenue(prevR);
+      setPrevOrderCount(prevO);
+      setPrevMonthlyClients(prevMc);
+      setPrevGreenLevel(prevLg);
+      setPrevOrangeLevel(prevLo);
+      setPrevRedLevel(prevLr);
+      setPrevDormant(prevDorm);
 
-      // ── 6. Total order count for selected period ──────────────────────────
-      // ── 6. Build trend from salesperson_performance (order_count is in the view) ──
-      const trendMap = new Map<string, { meters: number; clients: number; revenue: number; orders: number; monthIdx: number }>();
-      trendRowsRaw.forEach((r: any) => {
-        if (!r.month) return;
-        const key = String(r.month).padStart(2, "0");
-        if (!trendMap.has(key)) trendMap.set(key, { meters: 0, clients: 0, revenue: 0, orders: 0, monthIdx: Number(r.month) - 1 });
-        const e = trendMap.get(key)!;
-        e.meters  += Number(r.total_meters)   || 0;
-        e.clients += Number(r.active_clients) || 0;
-        e.revenue += Number(r.total_revenue)  || 0;
-        e.orders  += Number(r.order_count)    || 0;
+      // ── 6. Monthly bar chart: same universe as KPIs (all dashboard filters) ──
+      const trendAcc = new Map<string, { y: number; m: number; meters: number; revenue: number; orders: number; clients: Set<string> }>();
+      kpiRows.forEach((r: any) => {
+        const m = Number(r.month);
+        const y = Number(r.year);
+        if (!m || !y) return;
+        const abs = y * 12 + m;
+        if (abs < startVal || abs > endVal) return;
+        const key = `${y}-${String(m).padStart(2, "0")}`;
+        if (!trendAcc.has(key)) {
+          trendAcc.set(key, { y, m, meters: 0, revenue: 0, orders: 0, clients: new Set() });
+        }
+        const e = trendAcc.get(key)!;
+        e.meters += Number(r.total_meters) || 0;
+        e.revenue += Number(r.total_revenue) || 0;
+        e.orders += Number(r.order_count) || 0;
+        if (r.client_id) e.clients.add(String(r.client_id));
       });
-      const sortedKeys = Array.from(trendMap.keys()).sort();
-      const trend = sortedKeys.length > 0
-        ? sortedKeys.map((k) => { const e = trendMap.get(k)!; return { monthIdx: e.monthIdx, meters: Math.round(e.meters), clients: e.clients, orders: e.orders, revenue: Math.round(e.revenue) }; })
-        : Array.from({ length: 12 }, (_, i) => ({ monthIdx: i, meters: 0, clients: 0, orders: 0, revenue: 0 }));
+      const trendSorted = Array.from(trendAcc.entries()).sort(
+        (a, b) => a[1].y * 12 + a[1].m - (b[1].y * 12 + b[1].m),
+      );
+      const trend =
+        trendSorted.length > 0
+          ? trendSorted.map(([, e]) => ({
+              monthIdx: e.m - 1,
+              year: e.y,
+              meters: Math.round(e.meters),
+              clients: e.clients.size,
+              orders: e.orders,
+              revenue: Math.round(e.revenue),
+            }))
+          : Array.from({ length: 12 }, (_, i) => ({
+              monthIdx: i,
+              year: dashTo.year,
+              meters: 0,
+              clients: 0,
+              orders: 0,
+              revenue: 0,
+            }));
       setMonthlyTrend(trend);
 
-      const newOrderCount = (orderCountRes as any)?.count || 0;
-      setOrderCount(newOrderCount);
+      if (selectedProductNames.length > 0) {
+        orderCountFinal = kpiRows.reduce((s: number, r: any) => s + (Number(r.order_count) || 0), 0);
+      }
+      setOrderCount(orderCountFinal);
       dataCache.set(cacheKey, {
         totalM: Math.round(totalM), greenC: greenC_final, orangeC: orangeC_final, redC, activeC,
-        monthlyC: consistentMonthly, prevM, trend, totalClients: denominatorCount,
-        orderCount: newOrderCount,
+        monthlyC: consistentMonthly, prevM, prevR, prevO, prevMc, prevLg, prevLo, prevLr, prevDorm, trend, totalClients: denominatorCount,
+        orderCount: orderCountFinal,
+        totalRevenue: Math.round(totalRev),
       });
 
     } catch (err) {
@@ -404,7 +559,7 @@ export default function DashboardPage() {
       setIsRefreshing(false);
       setHasLoadedOnce(true);
     }
-  }, [dashFrom, dashTo, filters.selectedSalesperson, salespersonId, hasLoadedOnce, selectedProduct, selectedCustType]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [dashFrom, dashTo, filters.selectedSalesperson, salespersonId, hasLoadedOnce, selectedProductNames, selectedClientIds, selectedCustTypes]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => { fetchData(); }, [fetchData]);
 
@@ -424,14 +579,19 @@ export default function DashboardPage() {
         return v >= startVal && v <= endVal;
       };
 
+      const custTypesForFilter =
+        selectedCustTypes.length > 0
+          ? selectedCustTypes.filter((t) => (ALLOWED_CUSTOMER_TYPES as readonly string[]).includes(t))
+          : [...ALLOWED_CUSTOMER_TYPES];
+
       /** Same filters as main KPI `kpiQuery` so rankings match the dashboard. */
       const rankingCmmQuery = (q: any) => {
         let qq = q.gte("year", dashFrom.year).lte("year", dashTo.year);
         if (dashFrom.year === dashTo.year) qq = qq.gte("month", dashFrom.month).lte("month", dashTo.month);
         if (spFilter) qq = qq.eq("salesperson_id", spFilter);
-        if (selectedProduct) qq = qq.eq("top_product_name", selectedProduct);
-        qq = qq.in("customer_type", [...ALLOWED_CUSTOMER_TYPES]);
-        if (selectedCustType) qq = qq.eq("customer_type", selectedCustType);
+        qq = qq.in("customer_type", custTypesForFilter);
+        if (selectedProductNames.length > 0) qq = qq.in("top_product_name", selectedProductNames);
+        if (selectedClientIds.length > 0) qq = qq.in("client_id", selectedClientIds);
         return qq;
       };
 
@@ -466,7 +626,7 @@ export default function DashboardPage() {
         if (!inRange(Number(r.month), Number(r.year))) return;
         const sid = r.salesperson_id as string | null;
         if (!sid) return;
-        if (isExcludedFromSalesLeaderboard(r.salesperson_name)) return;
+        if (isExcludedFromSalesLeaderboard(`${r.salesperson_name || ""} ${r.salesperson_code || ""}`.trim())) return;
         if (!spAgg.has(sid)) {
           spAgg.set(sid, {
             name: r.salesperson_name || r.salesperson_code || "—",
@@ -485,10 +645,16 @@ export default function DashboardPage() {
       spAgg.forEach((e, sid) => {
         e.clients = spClientSets.get(sid)?.size ?? 0;
       });
-      setLeaderboard(Array.from(spAgg.values()).sort((a, b) => b.meters - a.meters).slice(0, 15));
+      setLeaderboard(
+        Array.from(spAgg.entries())
+          .map(([id, e]) => ({ id, ...e }))
+          .sort((a, b) => b.meters - a.meters)
+          .slice(0, 15),
+      );
 
       // ── 2. Product ranking ─────────────────────────────────────────────────
-      const useCmmForProducts = !!(selectedCustType || selectedProduct);
+      const useCmmForProducts =
+        selectedCustTypes.length > 0 || selectedProductNames.length > 0 || selectedClientIds.length > 0;
       let productRanking: { name: string; qty: number; revenue: number; clients: number }[] = [];
 
       if (useCmmForProducts) {
@@ -576,17 +742,18 @@ export default function DashboardPage() {
         });
       });
       setTopClients(
-        Array.from(clientAgg.values())
+        Array.from(clientAgg.entries())
+          .map(([client_id, c]) => ({ client_id, ...c }))
           .filter((c) => !isExcludedFromClientLeaderboard(c.name))
           .sort((a, b) => b.meters - a.meters)
-          .slice(0, 10)
+          .slice(0, 10),
       );
     } catch (e) {
       console.error("Rankings fetch error:", e);
     } finally {
       setRankLoading(false);
     }
-  }, [dashFrom, dashTo, filters.selectedSalesperson, salespersonId, selectedProduct, selectedCustType]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [dashFrom, dashTo, filters.selectedSalesperson, salespersonId, selectedProductNames, selectedClientIds, selectedCustTypes]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => { fetchRankings(); }, [fetchRankings]);
 
@@ -595,6 +762,49 @@ export default function DashboardPage() {
   const uniqueClients  = activeClientCount;
   const noOrderClients = redCount;
   const metersGrowth   = calculateGrowthRate(totalMeters, prevMeters);
+  const isDashSingleMonth = dashFrom.year === dashTo.year && dashFrom.month === dashTo.month;
+  const revenueGrowth = calculateGrowthRate(totalRevenue, prevRevenue);
+  const clientsKpiDisplay = monthlyClientCount || uniqueClients;
+  const clientsGrowth = calculateGrowthRate(clientsKpiDisplay, prevMonthlyClients);
+  const ordersGrowth = calculateGrowthRate(orderCount, prevOrderCount);
+
+  /** Product dropdown: bestsellers from rankings first, then alphabetical. */
+  const productPickerList = useMemo(() => {
+    const rankMap = new Map(topProducts.map((p) => [p.name, p.qty]));
+    return [...products].sort((a, b) => {
+      const qa = rankMap.get(a.name) ?? -1;
+      const qb = rankMap.get(b.name) ?? -1;
+      if (qa !== qb) return qb - qa;
+      return a.name.localeCompare(b.name);
+    });
+  }, [products, topProducts]);
+
+  const productFilterSummary =
+    selectedProductNames.length === 0
+      ? isRTL ? "كل المنتجات" : "All Products"
+      : selectedProductNames.length === 1
+        ? selectedProductNames[0]
+        : isRTL
+          ? `${selectedProductNames.length} منتجات`
+          : `${selectedProductNames.length} products`;
+
+  const clientFilterSummary =
+    selectedClientIds.length === 0
+      ? isRTL ? "كل العملاء" : "All Clients"
+      : selectedClientIds.length === 1
+        ? clientPickerOptions.find((c) => c.id === selectedClientIds[0])?.name ?? selectedClientIds[0]
+        : isRTL
+          ? `${selectedClientIds.length} عملاء`
+          : `${selectedClientIds.length} clients`;
+
+  const custTypeFilterSummary =
+    selectedCustTypes.length === 0
+      ? isRTL ? "كل الأنواع" : "All Types"
+      : selectedCustTypes.length === 1
+        ? selectedCustTypes[0]
+        : isRTL
+          ? `${selectedCustTypes.length} أنواع`
+          : `${selectedCustTypes.length} types`;
 
   // Level counts now come directly from the RPC stats function
   const greenClients  = Array(greenCount).fill({ level: "GREEN",  client_id: "g", client_name: "" });
@@ -626,6 +836,7 @@ export default function DashboardPage() {
 
     // Chart / section titles
     vsLast:       isRTL ? "مقارنةً بالشهر الماضي"            : "vs. previous month",
+    compareLastMonth: isRTL ? "مقارنة بالشهر الماضي" : "Compared to last month",
     trend:        isRTL ? "اتجاه المبيعات الشهرية"            : "Monthly Sales Trend",
     distribution: isRTL ? "توزيع العملاء حسب حجم الطلبات"   : "Client Distribution by Order Volume",
     clickDetails: isRTL ? "انقر للتفاصيل"                    : "Click for details",
@@ -666,6 +877,28 @@ export default function DashboardPage() {
       isRTL ? "المنتجات مرتبة حسب الكمية المباعة بالأمتار في النطاق الزمني المحدد"
             : "Products ranked by total meters sold in the selected date range",
   };
+
+  const KpiMoMRow = ({ pct }: { pct: number }) =>
+    isDashSingleMonth ? (
+      <div
+        className={cn(
+          "mt-0.5 flex flex-wrap items-center gap-1.5 text-[9px] md:text-[11px]",
+          isRTL && "flex-row-reverse",
+        )}
+      >
+        <span className="text-muted-foreground leading-tight">{t.compareLastMonth}</span>
+        <span
+          className={cn(
+            "font-semibold tabular-nums leading-tight whitespace-nowrap",
+            pct > 0 && "text-green-600 dark:text-green-400",
+            pct < 0 && "text-red-500 dark:text-red-400",
+            pct === 0 && "text-muted-foreground",
+          )}
+        >
+          {pct > 0 ? "▲" : pct < 0 ? "▼" : "—"} {Math.abs(pct).toFixed(1)}%
+        </span>
+      </div>
+    ) : null;
 
   if (loading && !hasLoadedOnce) {
     return (
@@ -788,14 +1021,58 @@ export default function DashboardPage() {
 
           <div className="w-px h-4 md:h-5 bg-border mx-0.5 md:mx-1" />
 
-          {/* Product filter — searchable */}
+          {/* Clients — multiselect */}
+          <Popover open={clientOpen} onOpenChange={setClientOpen}>
+            <PopoverTrigger asChild>
+              <Button variant="outline" role="combobox" aria-expanded={clientOpen}
+                className="w-28 md:w-40 h-7 md:h-8 text-[10px] md:text-xs justify-between font-normal shrink-0 px-2">
+                <span className="truncate">{clientFilterSummary}</span>
+                <ChevronsUpDown className="h-3.5 w-3.5 shrink-0 opacity-50 ml-1" />
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent className="w-64 p-0" align="start">
+              <Command>
+                <CommandInput placeholder={isRTL ? "ابحث عن عميل..." : "Search client..."} className="text-xs h-8" />
+                <CommandList>
+                  <CommandEmpty className="text-xs py-3 text-center text-muted-foreground">
+                    {isRTL ? "لا توجد نتائج" : "No results"}
+                  </CommandEmpty>
+                  <CommandGroup>
+                    <CommandItem
+                      value="__all_clients__"
+                      onSelect={() => { setSelectedClientIds([]); }}
+                      className="text-xs"
+                    >
+                      <Check className={`h-3.5 w-3.5 mr-2 ${selectedClientIds.length === 0 ? "opacity-100" : "opacity-0"}`} />
+                      {isRTL ? "كل العملاء" : "All Clients"}
+                    </CommandItem>
+                    {clientPickerOptions.map((c) => (
+                      <CommandItem
+                        key={c.id}
+                        value={`${c.name} ${c.partner_id}`}
+                        onSelect={() => {
+                          setSelectedClientIds((prev) =>
+                            prev.includes(c.id) ? prev.filter((x) => x !== c.id) : [...prev, c.id],
+                          );
+                        }}
+                        className="text-xs"
+                      >
+                        <Check className={`h-3.5 w-3.5 mr-2 shrink-0 ${selectedClientIds.includes(c.id) ? "opacity-100" : "opacity-0"}`} />
+                        <span className="truncate">{c.name}</span>
+                      </CommandItem>
+                    ))}
+                  </CommandGroup>
+                </CommandList>
+              </Command>
+            </PopoverContent>
+          </Popover>
+
+          {/* Product filter — multiselect, sorted by bestsellers */}
           <Popover open={prodOpen} onOpenChange={setProdOpen}>
             <PopoverTrigger asChild>
               <Button variant="outline" role="combobox" aria-expanded={prodOpen}
                 className="w-28 md:w-40 h-7 md:h-8 text-[10px] md:text-xs justify-between font-normal shrink-0 px-2">
-                <span className="truncate">
-                  {selectedProduct ?? (isRTL ? "كل المنتجات" : "All Products")}
-                </span>
+                <span className="truncate">{productFilterSummary}</span>
                 <ChevronsUpDown className="h-3.5 w-3.5 shrink-0 opacity-50 ml-1" />
               </Button>
             </PopoverTrigger>
@@ -807,15 +1084,26 @@ export default function DashboardPage() {
                     {isRTL ? "لا توجد نتائج" : "No results"}
                   </CommandEmpty>
                   <CommandGroup>
-                    <CommandItem value="all" onSelect={() => { setSelectedProduct(null); setProdOpen(false); }} className="text-xs">
-                      <Check className={`h-3.5 w-3.5 mr-2 ${!selectedProduct ? "opacity-100" : "opacity-0"}`} />
+                    <CommandItem
+                      value="__all_products__"
+                      onSelect={() => { setSelectedProductNames([]); }}
+                      className="text-xs"
+                    >
+                      <Check className={`h-3.5 w-3.5 mr-2 ${selectedProductNames.length === 0 ? "opacity-100" : "opacity-0"}`} />
                       {isRTL ? "كل المنتجات" : "All Products"}
                     </CommandItem>
-                    {products.map((p) => (
-                      <CommandItem key={p.id} value={p.name}
-                        onSelect={() => { setSelectedProduct(selectedProduct === p.name ? null : p.name); setProdOpen(false); }}
-                        className="text-xs">
-                        <Check className={`h-3.5 w-3.5 mr-2 shrink-0 ${selectedProduct === p.name ? "opacity-100" : "opacity-0"}`} />
+                    {productPickerList.map((p) => (
+                      <CommandItem
+                        key={p.id}
+                        value={p.name}
+                        onSelect={() => {
+                          setSelectedProductNames((prev) =>
+                            prev.includes(p.name) ? prev.filter((n) => n !== p.name) : [...prev, p.name],
+                          );
+                        }}
+                        className="text-xs"
+                      >
+                        <Check className={`h-3.5 w-3.5 mr-2 shrink-0 ${selectedProductNames.includes(p.name) ? "opacity-100" : "opacity-0"}`} />
                         <span className="truncate">{p.name}</span>
                       </CommandItem>
                     ))}
@@ -825,28 +1113,60 @@ export default function DashboardPage() {
             </PopoverContent>
           </Popover>
 
-          {/* Customer Type filter */}
-          <Select value={selectedCustType ?? "all"} onValueChange={(v) => setSelectedCustType(v === "all" ? null : v)}>
-            <SelectTrigger className="w-[5.5rem] md:w-32 h-7 md:h-8 text-[10px] md:text-xs shrink-0 px-2">
-              <SelectValue placeholder={isRTL ? "النوع" : "Type"} />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all" className="text-xs">{isRTL ? "كل الأنواع" : "All Types"}</SelectItem>
-              {custTypes.map((ct) => <SelectItem key={ct} value={ct} className="text-xs">{ct}</SelectItem>)}
-            </SelectContent>
-          </Select>
+          {/* Customer type — multiselect */}
+          <Popover open={custTypeOpen} onOpenChange={setCustTypeOpen}>
+            <PopoverTrigger asChild>
+              <Button variant="outline" role="combobox" aria-expanded={custTypeOpen}
+                className="w-[5.5rem] md:w-36 h-7 md:h-8 text-[10px] md:text-xs justify-between font-normal shrink-0 px-2">
+                <span className="truncate">{custTypeFilterSummary}</span>
+                <ChevronsUpDown className="h-3.5 w-3.5 shrink-0 opacity-50 ml-1" />
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent className="w-48 p-0" align="start">
+              <Command>
+                <CommandList>
+                  <CommandGroup>
+                    <CommandItem
+                      value="__all_types__"
+                      onSelect={() => { setSelectedCustTypes([]); }}
+                      className="text-xs"
+                    >
+                      <Check className={`h-3.5 w-3.5 mr-2 ${selectedCustTypes.length === 0 ? "opacity-100" : "opacity-0"}`} />
+                      {isRTL ? "كل الأنواع" : "All Types"}
+                    </CommandItem>
+                    {custTypes.map((ct) => (
+                      <CommandItem
+                        key={ct}
+                        value={ct}
+                        onSelect={() => {
+                          setSelectedCustTypes((prev) =>
+                            prev.includes(ct) ? prev.filter((t) => t !== ct) : [...prev, ct],
+                          );
+                        }}
+                        className="text-xs"
+                      >
+                        <Check className={`h-3.5 w-3.5 mr-2 shrink-0 ${selectedCustTypes.includes(ct) ? "opacity-100" : "opacity-0"}`} />
+                        {ct}
+                      </CommandItem>
+                    ))}
+                  </CommandGroup>
+                </CommandList>
+              </Command>
+            </PopoverContent>
+          </Popover>
 
           {/* Active filters badge + clear */}
           {(dashFrom.year !== _defYear || dashFrom.month !== _defMonth ||
             dashTo.year  !== _defYear || dashTo.month  !== _defMonth ||
-            filters.selectedSalesperson || selectedProduct || selectedCustType) && (
+            filters.selectedSalesperson || selectedProductNames.length > 0 || selectedClientIds.length > 0 || selectedCustTypes.length > 0) && (
             <Button variant="ghost" size="sm" className="h-7 px-2 text-xs gap-1 text-muted-foreground hover:text-destructive shrink-0"
               onClick={() => {
                 setDashFrom({ month: _defMonth, year: _defYear });
                 setDashTo({ month: _defMonth, year: _defYear });
                 setFilter("selectedSalesperson", null);
-                setSelectedProduct(null);
-                setSelectedCustType(null);
+                setSelectedProductNames([]);
+                setSelectedClientIds([]);
+                setSelectedCustTypes([]);
               }}>
               <X className="h-3.5 w-3.5" />
               {isRTL ? "مسح الكل" : "Clear"}
@@ -872,56 +1192,10 @@ export default function DashboardPage() {
         </div>
       )}
 
-      {/* ── 4 Main KPI Summary Cards ── */}
+      {/* ── 4 Main KPI Summary Cards (Revenue → Meters → Clients → Orders) ── */}
       <div className="grid grid-cols-2 xl:grid-cols-4 gap-2 md:gap-3">
-        {/* Orders */}
-        <button onClick={() => router.push("/clients")}
-          className="rounded-xl md:rounded-2xl border border-purple-200 dark:border-purple-800 bg-gradient-to-br from-purple-50 to-purple-100/50 dark:from-purple-950/30 dark:to-purple-900/10 p-2.5 md:p-4 text-start hover:shadow-md transition-all group min-w-0">
-          <div className="flex items-start justify-between gap-1 mb-1 md:mb-2">
-            <span className="text-[10px] md:text-xs font-semibold text-purple-600 dark:text-purple-400 leading-tight line-clamp-2">{isRTL ? "عدد الطلبات" : "Orders"}</span>
-            <div className="h-6 w-6 md:h-8 md:w-8 rounded-lg md:rounded-xl bg-purple-500/15 flex items-center justify-center group-hover:bg-purple-500/25 transition-colors shrink-0">
-              <ShoppingCart className="h-3 w-3 md:h-4 md:w-4 text-purple-600 dark:text-purple-400" />
-            </div>
-          </div>
-          <div className="text-lg md:text-2xl font-bold tabular-nums text-foreground leading-tight">{formatNumber(orderCount)}</div>
-          <div className="text-[9px] md:text-[11px] text-muted-foreground mt-0.5 leading-tight line-clamp-2">{isRTL ? "في الفترة المحددة" : "In selected period"}</div>
-        </button>
-
-        {/* Meters */}
-        <button onClick={() => { dataCache.invalidate("clients_v9:"); setFilter("selectedMonth", dashTo.month); setFilter("selectedYear", dashTo.year); setFilter("selectedLevel", null); router.push("/clients"); }}
-          className="rounded-xl md:rounded-2xl border border-blue-200 dark:border-blue-800 bg-gradient-to-br from-blue-50 to-blue-100/50 dark:from-blue-950/30 dark:to-blue-900/10 p-2.5 md:p-4 text-start hover:shadow-md transition-all group min-w-0">
-          <div className="flex items-start justify-between gap-1 mb-1 md:mb-2">
-            <span className="text-[10px] md:text-xs font-semibold text-blue-600 dark:text-blue-400 leading-tight line-clamp-2">{t.totalMeters}</span>
-            <div className="h-6 w-6 md:h-8 md:w-8 rounded-lg md:rounded-xl bg-blue-500/15 flex items-center justify-center group-hover:bg-blue-500/25 transition-colors shrink-0">
-              <TrendingUp className="h-3 w-3 md:h-4 md:w-4 text-blue-600 dark:text-blue-400" />
-            </div>
-          </div>
-          <div className="text-lg md:text-2xl font-bold tabular-nums text-foreground leading-tight">{formatNumber(totalMeters)}<span className="text-xs md:text-sm font-medium ms-0.5">{isRTL ? "م" : "m"}</span></div>
-          <div className="flex flex-wrap items-center gap-1 mt-0.5">
-            {metersGrowth !== 0 && (
-              <span className={`text-[9px] md:text-[11px] font-semibold ${metersGrowth > 0 ? "text-green-600" : "text-red-500"}`}>
-                {metersGrowth > 0 ? "▲" : "▼"} {Math.abs(metersGrowth).toFixed(1)}%
-              </span>
-            )}
-            <span className="text-[9px] md:text-[11px] text-muted-foreground leading-tight">{t.vsLast}</span>
-          </div>
-        </button>
-
-        {/* Clients */}
-        <button onClick={() => { dataCache.invalidate("clients_v9:"); setFilter("selectedMonth", dashTo.month); setFilter("selectedYear", dashTo.year); setFilter("selectedLevel", null); router.push("/clients"); }}
-          className="rounded-xl md:rounded-2xl border border-green-200 dark:border-green-800 bg-gradient-to-br from-green-50 to-green-100/50 dark:from-green-950/30 dark:to-green-900/10 p-2.5 md:p-4 text-start hover:shadow-md transition-all group min-w-0">
-          <div className="flex items-start justify-between gap-1 mb-1 md:mb-2">
-            <span className="text-[10px] md:text-xs font-semibold text-green-600 dark:text-green-400 leading-tight line-clamp-2">{isRTL ? "عملاء نشطون" : "Active Clients"}</span>
-            <div className="h-6 w-6 md:h-8 md:w-8 rounded-lg md:rounded-xl bg-green-500/15 flex items-center justify-center group-hover:bg-green-500/25 transition-colors shrink-0">
-              <Users className="h-3 w-3 md:h-4 md:w-4 text-green-600 dark:text-green-400" />
-            </div>
-          </div>
-          <div className="text-lg md:text-2xl font-bold tabular-nums text-foreground leading-tight">{(monthlyClientCount || uniqueClients).toLocaleString()}</div>
-          <div className="text-[9px] md:text-[11px] text-muted-foreground mt-0.5 leading-tight">{isRTL ? "من" : "of"} {totalClientCount.toLocaleString()} {isRTL ? "إجمالي" : "total"}</div>
-        </button>
-
         {/* Revenue */}
-        <button onClick={() => router.push("/clients")}
+        <button type="button" onClick={() => router.push("/clients")}
           className="rounded-xl md:rounded-2xl border border-amber-200 dark:border-amber-800 bg-gradient-to-br from-amber-50 to-amber-100/50 dark:from-amber-950/30 dark:to-amber-900/10 p-2.5 md:p-4 text-start hover:shadow-md transition-all group min-w-0">
           <div className="flex items-start justify-between gap-1 mb-1 md:mb-2">
             <span className="text-[10px] md:text-xs font-semibold text-amber-600 dark:text-amber-400 leading-tight line-clamp-2">{isRTL ? "الإيراد الإجمالي" : "Total Revenue"}</span>
@@ -931,6 +1205,50 @@ export default function DashboardPage() {
           </div>
           <div className="text-lg md:text-2xl font-bold tabular-nums text-foreground leading-tight">{formatNumber(totalRevenue)}</div>
           <div className="text-[9px] md:text-[11px] text-muted-foreground mt-0.5">EGP</div>
+          <KpiMoMRow pct={revenueGrowth} />
+        </button>
+
+        {/* Meters */}
+        <button type="button" onClick={() => { dataCache.invalidate("clients_v9:"); setFilter("selectedMonth", dashTo.month); setFilter("selectedYear", dashTo.year); setFilter("selectedLevel", null); router.push("/clients"); }}
+          className="rounded-xl md:rounded-2xl border border-blue-200 dark:border-blue-800 bg-gradient-to-br from-blue-50 to-blue-100/50 dark:from-blue-950/30 dark:to-blue-900/10 p-2.5 md:p-4 text-start hover:shadow-md transition-all group min-w-0">
+          <div className="flex items-start justify-between gap-1 mb-1 md:mb-2">
+            <span className="text-[10px] md:text-xs font-semibold text-blue-600 dark:text-blue-400 leading-tight line-clamp-2">{t.totalMeters}</span>
+            <div className="h-6 w-6 md:h-8 md:w-8 rounded-lg md:rounded-xl bg-blue-500/15 flex items-center justify-center group-hover:bg-blue-500/25 transition-colors shrink-0">
+              <TrendingUp className="h-3 w-3 md:h-4 md:w-4 text-blue-600 dark:text-blue-400" />
+            </div>
+          </div>
+          <div className="text-lg md:text-2xl font-bold tabular-nums text-foreground leading-tight">{formatNumber(totalMeters)}<span className="text-xs md:text-sm font-medium ms-0.5">{isRTL ? "م" : "m"}</span></div>
+          <KpiMoMRow pct={metersGrowth} />
+        </button>
+
+        {/* Clients */}
+        <button type="button" onClick={() => { dataCache.invalidate("clients_v9:"); setFilter("selectedMonth", dashTo.month); setFilter("selectedYear", dashTo.year); setFilter("selectedLevel", null); router.push("/clients"); }}
+          className="rounded-xl md:rounded-2xl border border-green-200 dark:border-green-800 bg-gradient-to-br from-green-50 to-green-100/50 dark:from-green-950/30 dark:to-green-900/10 p-2.5 md:p-4 text-start hover:shadow-md transition-all group min-w-0">
+          <div className="flex items-start justify-between gap-1 mb-1 md:mb-2">
+            <span className="text-[10px] md:text-xs font-semibold text-green-600 dark:text-green-400 leading-tight line-clamp-2">{isRTL ? "عملاء نشطون" : "Active Clients"}</span>
+            <div className="h-6 w-6 md:h-8 md:w-8 rounded-lg md:rounded-xl bg-green-500/15 flex items-center justify-center group-hover:bg-green-500/25 transition-colors shrink-0">
+              <Users className="h-3 w-3 md:h-4 md:w-4 text-green-600 dark:text-green-400" />
+            </div>
+          </div>
+          <div className="text-lg md:text-2xl font-bold tabular-nums text-foreground leading-tight">{(monthlyClientCount || uniqueClients).toLocaleString()}</div>
+          <div className="text-[9px] md:text-[11px] text-muted-foreground mt-0.5 leading-tight">{isRTL ? "من" : "of"} {totalClientCount.toLocaleString()} {isRTL ? "إجمالي" : "total"}</div>
+          <KpiMoMRow pct={clientsGrowth} />
+        </button>
+
+        {/* Orders */}
+        <button type="button" onClick={() => router.push("/clients")}
+          className="rounded-xl md:rounded-2xl border border-purple-200 dark:border-purple-800 bg-gradient-to-br from-purple-50 to-purple-100/50 dark:from-purple-950/30 dark:to-purple-900/10 p-2.5 md:p-4 text-start hover:shadow-md transition-all group min-w-0">
+          <div className="flex items-start justify-between gap-1 mb-1 md:mb-2">
+            <span className="text-[10px] md:text-xs font-semibold text-purple-600 dark:text-purple-400 leading-tight line-clamp-2">{isRTL ? "عدد الطلبات" : "Orders"}</span>
+            <div className="h-6 w-6 md:h-8 md:w-8 rounded-lg md:rounded-xl bg-purple-500/15 flex items-center justify-center group-hover:bg-purple-500/25 transition-colors shrink-0">
+              <ShoppingCart className="h-3 w-3 md:h-4 md:w-4 text-purple-600 dark:text-purple-400" />
+            </div>
+          </div>
+          <div className="text-lg md:text-2xl font-bold tabular-nums text-foreground leading-tight">{formatNumber(orderCount)}</div>
+          {!isDashSingleMonth && (
+            <div className="text-[9px] md:text-[11px] text-muted-foreground mt-0.5 leading-tight line-clamp-2">{isRTL ? "في الفترة المحددة" : "In selected period"}</div>
+          )}
+          <KpiMoMRow pct={ordersGrowth} />
         </button>
       </div>
 
@@ -942,6 +1260,11 @@ export default function DashboardPage() {
           : (isSingleM ? "of month"  : "of period");
         const pct = (n: number) =>
           `${monthlyClientCount > 0 ? ((n / monthlyClientCount) * 100).toFixed(0) : 0}% ${pctLabel}`;
+
+        const greenMom = calculateGrowthRate(greenClients.length, prevGreenLevel);
+        const orangeMom = calculateGrowthRate(orangeClients.length, prevOrangeLevel);
+        const redMom = calculateGrowthRate(noOrderClients, prevRedLevel);
+        const dormantMom = calculateGrowthRate(dormantThisMonth, prevDormant);
 
         // When navigating to clients, sync the store's month/year to dashTo
         // (end of range).  For single-month selections dashFrom = dashTo so
@@ -968,12 +1291,13 @@ export default function DashboardPage() {
 
         const LevelBox = ({
           onClick, borderCls, bgCls, iconBgCls, textCls, subTextCls, dividerCls,
-          icon, title, clients, clientsPct, orders, meters,
+          icon, title, clients, clientsPct, orders, meters, momPct,
         }: {
           onClick: () => void; borderCls: string; bgCls: string; iconBgCls: string;
           textCls: string; subTextCls: string; dividerCls: string;
           icon: React.ReactNode; title: string;
           clients: number; clientsPct: string; orders: number; meters: string;
+          momPct: number;
         }) => (
           <div onClick={onClick} className={`cursor-pointer rounded-2xl border ${borderCls} ${bgCls} p-4 hover:shadow-md transition-shadow`}>
             <div className="flex items-center gap-2 mb-2">
@@ -986,6 +1310,7 @@ export default function DashboardPage() {
               <SubMetric label={isRTL ? "أمتار"  : "Meters"} val={meters} textCls={textCls} />
             </div>
             <p className={`text-[10px] mt-1.5 ${subTextCls}`}>{clientsPct}</p>
+            <KpiMoMRow pct={momPct} />
           </div>
         );
 
@@ -1005,6 +1330,7 @@ export default function DashboardPage() {
           clientsPct={`${pct(greenClients.length)}`}
           orders={greenOrders}
           meters={`${formatNumber(greenMeters)}m`}
+          momPct={greenMom}
         />
         <LevelBox
           onClick={() => goClients("ORANGE")}
@@ -1020,6 +1346,7 @@ export default function DashboardPage() {
           clientsPct={`${pct(orangeClients.length)}`}
           orders={orangeOrders}
           meters={`${formatNumber(orangeMeters)}m`}
+          momPct={orangeMom}
         />
         <LevelBox
           onClick={() => goClients("RED")}
@@ -1035,6 +1362,7 @@ export default function DashboardPage() {
           clientsPct={`${pct(noOrderClients)}`}
           orders={redOrders}
           meters="0m"
+          momPct={redMom}
         />
         <LevelBox
           onClick={() => goClients("INACTIVE")}
@@ -1050,6 +1378,7 @@ export default function DashboardPage() {
           clientsPct={`${totalClientCount > 0 ? ((dormantThisMonth / totalClientCount) * 100).toFixed(0) : 0}% ${isRTL ? "من الكل" : "of total"}`}
           orders={0}
           meters="0m"
+          momPct={dormantMom}
         />
       </div>
         );
@@ -1081,9 +1410,15 @@ export default function DashboardPage() {
               <div className="h-[200px] md:h-[280px] w-full">
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart
-                  data={monthlyTrend.map((d) => ({ ...d, month: months[d.monthIdx] }))}
+                  data={monthlyTrend.map((d: any) => ({
+                    ...d,
+                    month:
+                      dashFrom.year !== dashTo.year || dashFrom.month !== dashTo.month
+                        ? `${months[d.monthIdx]} ${d.year ?? ""}`.trim()
+                        : months[d.monthIdx],
+                  }))}
                   margin={{ top: 22, right: 44, left: 2, bottom: 0 }}
-                  barCategoryGap="18%"
+                  barCategoryGap="8%"
                   barGap={0}
                 >
                   <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" vertical={false} />
@@ -1114,7 +1449,7 @@ export default function DashboardPage() {
                     name={isRTL ? "الأمتار" : "Meters"}
                     fill="#3b82f6"
                     fillOpacity={0.9}
-                    radius={[4, 0, 0, 0]}
+                    radius={[2, 2, 0, 0]}
                   >
                     <LabelList
                       dataKey="meters"
@@ -1154,7 +1489,7 @@ export default function DashboardPage() {
                     name={isRTL ? "عدد الطلبات" : "Orders"}
                     fill="#8b5cf6"
                     fillOpacity={0.9}
-                    radius={[0, 4, 0, 0]}
+                    radius={[0, 2, 2, 0]}
                   >
                     <LabelList
                       dataKey="orders"
@@ -1196,34 +1531,7 @@ export default function DashboardPage() {
                   outerRadius={72}
                   dataKey="value"
                   labelLine={false}
-                  label={(props: any) => {
-                    const v = Number(props.value);
-                    if (!v || v < 1) return null;
-                    const { cx, cy, midAngle, innerRadius: ir, outerRadius: or } = props;
-                    const innerR = Number(ir);
-                    const outerR = Number(or);
-                    const radius = innerR + (outerR - innerR) * 0.55;
-                    const x = cx + radius * Math.cos(-midAngle * PIE_LABEL_RAD);
-                    const y = cy + radius * Math.sin(-midAngle * PIE_LABEL_RAD);
-                    const pct = Math.round((Number(props.percent) || 0) * 100);
-                    const fs = pct < 5 ? 8 : pct < 12 ? 9 : 10;
-                    const line = pct > 0 ? `${v.toLocaleString()} (${pct}%)` : v.toLocaleString();
-                    return (
-                      <text
-                        x={x}
-                        y={y}
-                        textAnchor="middle"
-                        dominantBaseline="central"
-                        fill="#ffffff"
-                        fontSize={fs}
-                        fontWeight={700}
-                        className="tabular-nums"
-                        style={{ paintOrder: "stroke fill", stroke: "rgba(0,0,0,0.5)", strokeWidth: 2.5 }}
-                      >
-                        {line}
-                      </text>
-                    );
-                  }}
+                  label={PieSliceOutsideLabel}
                   onClick={(data: any) => {
                     const levelMap: Record<string, string> = {
                       [isRTL ? "طلبات ≥ 100م"              : "Orders ≥ 100m"]:           "GREEN",
@@ -1316,8 +1624,18 @@ export default function DashboardPage() {
                   const maxM = leaderboard[0]?.meters || 1;
                   const pct  = Math.round((sp.meters / maxM) * 100);
                   const medal = i === 0 ? "🥇" : i === 1 ? "🥈" : i === 2 ? "🥉" : null;
+                  const isSel = filters.selectedSalesperson === sp.id;
                   return (
-                    <div key={i} className="flex items-center gap-2 md:gap-3 px-1 md:px-2 py-1 md:py-1.5 rounded-lg hover:bg-muted/40 transition-colors">
+                    <button
+                      type="button"
+                      key={sp.id}
+                      onClick={() => setFilter("selectedSalesperson", isSel ? null : sp.id)}
+                      className={cn(
+                        "w-full flex items-center gap-2 md:gap-3 px-1 md:px-2 py-1 md:py-1.5 rounded-lg text-start transition-colors",
+                        "hover:bg-muted/40",
+                        isSel && "ring-1 ring-primary/50 bg-primary/5",
+                      )}
+                    >
                       <span className="w-5 md:w-6 text-center text-xs md:text-sm font-bold text-muted-foreground shrink-0">
                         {medal ?? `${i + 1}`}
                       </span>
@@ -1344,7 +1662,7 @@ export default function DashboardPage() {
                           </span>
                         </div>
                       </div>
-                    </div>
+                    </button>
                   );
                 })}
               </div>
@@ -1374,8 +1692,22 @@ export default function DashboardPage() {
                   const maxQ = topProducts[0]?.qty || 1;
                   const pct  = Math.round((p.qty / maxQ) * 100);
                   const colors = ["#6366f1","#3b82f6","#06b6d4","#10b981","#f59e0b","#f97316","#ef4444","#ec4899","#8b5cf6","#84cc16"];
+                  const isSel = selectedProductNames.includes(p.name);
                   return (
-                    <div key={i} className="flex items-center gap-2 md:gap-3 px-1 md:px-2 py-1 md:py-1.5 rounded-lg hover:bg-muted/40 transition-colors">
+                    <button
+                      type="button"
+                      key={p.name}
+                      onClick={() =>
+                        setSelectedProductNames((prev) =>
+                          prev.includes(p.name) ? prev.filter((n) => n !== p.name) : [...prev, p.name],
+                        )
+                      }
+                      className={cn(
+                        "w-full flex items-center gap-2 md:gap-3 px-1 md:px-2 py-1 md:py-1.5 rounded-lg text-start transition-colors",
+                        "hover:bg-muted/40",
+                        isSel && "ring-1 ring-primary/50 bg-primary/5",
+                      )}
+                    >
                       <span className="w-5 md:w-6 text-center text-xs md:text-sm font-bold text-muted-foreground shrink-0">{i + 1}</span>
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center justify-between mb-0.5 gap-1">
@@ -1389,7 +1721,7 @@ export default function DashboardPage() {
                           <div className="h-full rounded-full transition-all duration-500" style={{ width: `${pct}%`, backgroundColor: colors[i % colors.length] }} />
                         </div>
                       </div>
-                    </div>
+                    </button>
                   );
                 })}
               </div>
@@ -1417,8 +1749,22 @@ export default function DashboardPage() {
                   const maxM = topClients[0]?.meters || 1;
                   const pct  = Math.round((c.meters / maxM) * 100);
                   const medal = i === 0 ? "🥇" : i === 1 ? "🥈" : i === 2 ? "🥉" : null;
+                  const isSel = selectedClientIds.includes(c.client_id);
                   return (
-                    <div key={i} className="flex items-center gap-2 md:gap-3 px-1 md:px-2 py-1 md:py-1.5 rounded-lg hover:bg-muted/40 transition-colors">
+                    <button
+                      type="button"
+                      key={c.client_id}
+                      onClick={() =>
+                        setSelectedClientIds((prev) =>
+                          prev.includes(c.client_id) ? prev.filter((x) => x !== c.client_id) : [...prev, c.client_id],
+                        )
+                      }
+                      className={cn(
+                        "w-full flex items-center gap-2 md:gap-3 px-1 md:px-2 py-1 md:py-1.5 rounded-lg text-start transition-colors",
+                        "hover:bg-muted/40",
+                        isSel && "ring-1 ring-primary/50 bg-primary/5",
+                      )}
+                    >
                       <span className="w-5 md:w-6 text-center text-xs md:text-sm font-bold text-muted-foreground shrink-0">{medal ?? `${i + 1}`}</span>
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center justify-between mb-0.5 gap-1">
@@ -1431,11 +1777,17 @@ export default function DashboardPage() {
                             {c.revenue > 0 && <div className="text-[9px] md:text-[10px] text-muted-foreground">{formatNumber(Math.round(c.revenue))} EGP</div>}
                           </div>
                         </div>
-                        <div className="h-1 md:h-1.5 bg-muted rounded-full overflow-hidden">
-                          <div className="h-full rounded-full transition-all duration-500 bg-violet-500" style={{ width: `${pct}%` }} />
+                        <div className="space-y-0.5">
+                          <div className="h-1 md:h-1.5 bg-muted rounded-full overflow-hidden relative">
+                            <div className="h-full rounded-full transition-all duration-500 bg-violet-500" style={{ width: `${pct}%` }} />
+                          </div>
+                          <div className="flex justify-between items-center gap-1 text-[10px] md:text-xs tabular-nums">
+                            <span className="text-muted-foreground">{isRTL ? "أمتار" : "Meters"}</span>
+                            <span className="font-bold text-foreground">{Math.round(c.meters).toLocaleString()} m</span>
+                          </div>
                         </div>
                       </div>
-                    </div>
+                    </button>
                   );
                 })}
               </div>

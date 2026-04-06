@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback, useRef } from "react";
+import { useEffect, useState, useCallback, useRef, useMemo } from "react";
 import { useSearchParams } from "next/navigation";
 import {
   useReactTable,
@@ -82,7 +82,12 @@ export default function ClientsPage() {
   const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>(() => {
     const cf: ColumnFiltersState = [];
     const product = searchParams.get("product");
-    if (product) cf.push({ id: "top_product_name", value: product });
+    if (product) {
+      const vals = product.includes(",")
+        ? product.split(",").map((s) => s.trim()).filter(Boolean)
+        : [product];
+      cf.push({ id: "top_product_name", value: vals.length > 1 ? vals : vals[0] });
+    }
     return cf;
   });
   const [selectedClient, setSelectedClient] = useState<ClientRow | null>(null);
@@ -96,10 +101,15 @@ export default function ClientsPage() {
     const search  = searchParams.get("search");
     const product = searchParams.get("product");
     if (search)  setGlobalFilter(search);
-    if (product) setColumnFilters((cf) => {
-      const without = cf.filter((f) => f.id !== "top_product_name");
-      return [...without, { id: "top_product_name", value: product }];
-    });
+    if (product) {
+      const vals = product.includes(",")
+        ? product.split(",").map((s) => s.trim()).filter(Boolean)
+        : [product];
+      setColumnFilters((cf) => {
+        const without = cf.filter((f) => f.id !== "top_product_name");
+        return [...without, { id: "top_product_name", value: vals.length > 1 ? vals : vals[0] }];
+      });
+    }
   }, [searchParams]);
 
   // Sync status/level store filters → table column filters (instant, no Supabase call)
@@ -342,8 +352,9 @@ export default function ClientsPage() {
   };
 
   const [selectedRows, setSelectedRows] = useState<Set<string>>(new Set());
-  const [prodOpen,    setProdOpen]    = useState(false);
-  const [typeOpen,    setTypeOpen]    = useState(false);
+  const [prodOpen, setProdOpen] = useState(false);
+  const [typeOpen, setTypeOpen] = useState(false);
+  const [clientFilterOpen, setClientFilterOpen] = useState(false);
 
   // Expandable log panel state
   const [expanded,   setExpanded]   = useState<Record<string, boolean>>({});
@@ -487,6 +498,14 @@ export default function ClientsPage() {
     // ── Product Name ──────────────────────────────────────────────────
     {
       accessorKey: "top_product_name",
+      filterFn: (row, columnId, filterValue) => {
+        if (filterValue == null || filterValue === "") return true;
+        const arr = Array.isArray(filterValue) ? (filterValue as string[]) : [String(filterValue)];
+        if (arr.length === 0) return true;
+        const cell = row.getValue(columnId) as string | null;
+        if (!cell) return false;
+        return arr.includes(cell);
+      },
       header: t.product,
       cell: ({ getValue }) => {
         const product = getValue() as string | null;
@@ -529,6 +548,14 @@ export default function ClientsPage() {
     // ── Customer Type ─────────────────────────────────────────────────
     {
       accessorKey: "customer_type",
+      filterFn: (row, columnId, filterValue) => {
+        if (filterValue == null || filterValue === "") return true;
+        const arr = Array.isArray(filterValue) ? (filterValue as string[]) : [String(filterValue)];
+        if (arr.length === 0) return true;
+        const cell = row.getValue(columnId) as string | null;
+        if (!cell) return false;
+        return arr.includes(cell);
+      },
       header: isRTL ? "نوع العميل" : "Cust. Type",
       cell: ({ getValue }) => {
         const ct = getValue() as string | null;
@@ -633,6 +660,21 @@ export default function ClientsPage() {
         </div>
       ),
     },
+    // Hidden column: multiselect client IDs (not shown; drives row filter)
+    {
+      id: "_clientIds",
+      accessorFn: (row) => row.id,
+      header: () => null,
+      cell: () => null,
+      size: 0,
+      enableSorting: false,
+      filterFn: (row, _columnId, filterValue) => {
+        if (filterValue == null || filterValue === "") return true;
+        const arr = Array.isArray(filterValue) ? (filterValue as string[]) : [String(filterValue)];
+        if (arr.length === 0) return true;
+        return arr.includes(row.original.id);
+      },
+    },
   ];
 
   const table = useReactTable({
@@ -646,18 +688,78 @@ export default function ClientsPage() {
     getSortedRowModel: getSortedRowModel(),
     getFilteredRowModel: getFilteredRowModel(),
     getPaginationRowModel: getPaginationRowModel(),
-    initialState: { pagination: { pageSize: 20 } },
+    initialState: {
+      pagination: { pageSize: 20 },
+      columnVisibility: { _clientIds: false },
+    },
   });
 
-  const productOptions = Array.from(new Set(clients.map((c) => c.top_product_name).filter(Boolean))).sort() as string[];
+  const metersByProduct = useMemo(() => {
+    const m = new Map<string, number>();
+    clients.forEach((c) => {
+      const n = c.top_product_name;
+      if (!n) return;
+      m.set(n, (m.get(n) || 0) + c.total_meters);
+    });
+    return m;
+  }, [clients]);
+
+  const productOptions = useMemo(() => {
+    const names = Array.from(new Set(clients.map((c) => c.top_product_name).filter(Boolean))) as string[];
+    return names.sort((a, b) => (metersByProduct.get(b) || 0) - (metersByProduct.get(a) || 0));
+  }, [clients, metersByProduct]);
+
+  const clientOptions = useMemo(
+    () =>
+      [...clients]
+        .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }))
+        .map((c) => ({ id: c.id, name: c.name, partner_id: c.partner_id })),
+    [clients],
+  );
+
   const typeOptions = allowedCustomerTypesList();
-  const activeProd = (table.getColumn("top_product_name")?.getFilterValue() as string) ?? "";
-  const activeType = (table.getColumn("customer_type")?.getFilterValue() as string) ?? "";
+
+  const colFilterArr = (columnId: string) => {
+    const v = table.getColumn(columnId)?.getFilterValue();
+    if (v == null || v === "") return [] as string[];
+    return Array.isArray(v) ? (v as string[]) : [String(v)];
+  };
+  const activeProdArr = colFilterArr("top_product_name");
+  const activeTypeArr = colFilterArr("customer_type");
+  const activeClientArr = colFilterArr("_clientIds");
+
+  const prodSummary =
+    activeProdArr.length === 0
+      ? isRTL ? "كل المنتجات" : "All Products"
+      : activeProdArr.length === 1
+        ? activeProdArr[0]
+        : isRTL
+          ? `${activeProdArr.length} منتجات`
+          : `${activeProdArr.length} products`;
+
+  const typeSummary =
+    activeTypeArr.length === 0
+      ? isRTL ? "كل الأنواع" : "All Types"
+      : activeTypeArr.length === 1
+        ? activeTypeArr[0]
+        : isRTL
+          ? `${activeTypeArr.length} أنواع`
+          : `${activeTypeArr.length} types`;
+
+  const clientSummary =
+    activeClientArr.length === 0
+      ? isRTL ? "كل العملاء" : "All Clients"
+      : activeClientArr.length === 1
+        ? clientOptions.find((c) => c.id === activeClientArr[0])?.name ?? activeClientArr[0]
+        : isRTL
+          ? `${activeClientArr.length} عملاء`
+          : `${activeClientArr.length} clients`;
 
   const handleExport = async () => {
     const { utils, writeFile } = await import("xlsx");
+    const rows = table.getFilteredRowModel().rows.map((r) => r.original);
     const ws = utils.json_to_sheet(
-      clients.map((c) => ({
+      rows.map((c) => ({
         [t.date]: c.month ? `${isRTL ? MONTH_NAMES_AR[c.month - 1] : MONTH_NAMES_EN[c.month - 1]} ${c.year}` : "",
         [t.partner]: c.partner_id,
         [t.client]: c.name,
@@ -677,15 +779,77 @@ export default function ClientsPage() {
     writeFile(wb, "clients.xlsx");
   };
 
+  const toggleProductFilter = (name: string) => {
+    const col = table.getColumn("top_product_name");
+    const v = col?.getFilterValue();
+    const cur = v == null || v === "" ? [] : Array.isArray(v) ? (v as string[]) : [String(v)];
+    const next = cur.includes(name) ? cur.filter((x) => x !== name) : [...cur, name];
+    col?.setFilterValue(next.length ? next : undefined);
+  };
+
+  const toggleTypeFilter = (ct: string) => {
+    const col = table.getColumn("customer_type");
+    const v = col?.getFilterValue();
+    const cur = v == null || v === "" ? [] : Array.isArray(v) ? (v as string[]) : [String(v)];
+    const next = cur.includes(ct) ? cur.filter((x) => x !== ct) : [...cur, ct];
+    col?.setFilterValue(next.length ? next : undefined);
+  };
+
+  const toggleClientFilter = (id: string) => {
+    const col = table.getColumn("_clientIds");
+    const v = col?.getFilterValue();
+    const cur = v == null || v === "" ? [] : Array.isArray(v) ? (v as string[]) : [String(v)];
+    const next = cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id];
+    col?.setFilterValue(next.length ? next : undefined);
+  };
+
   const productTypeMobileExtra = (
     <div className="flex flex-col gap-3">
       <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">
         {isRTL ? "من الجدول" : "Table filters"}
       </p>
+      <Popover open={clientFilterOpen} onOpenChange={setClientFilterOpen}>
+        <PopoverTrigger asChild>
+          <Button variant="outline" role="combobox" aria-expanded={clientFilterOpen} className="w-full h-9 text-xs justify-between font-normal">
+            <span className="truncate">{clientSummary}</span>
+            <ChevronsUpDown className="h-3.5 w-3.5 shrink-0 opacity-50 ms-1" />
+          </Button>
+        </PopoverTrigger>
+        <PopoverContent className="w-[min(100vw-2rem,20rem)] p-0" align="start">
+          <Command>
+            <CommandInput placeholder={isRTL ? "ابحث عن عميل..." : "Search client..."} className="text-xs h-8" />
+            <CommandList>
+              <CommandEmpty className="text-xs py-3 text-center text-muted-foreground">{isRTL ? "لا توجد نتائج" : "No results"}</CommandEmpty>
+              <CommandGroup>
+                <CommandItem
+                  value="__all_clients__"
+                  onSelect={() => table.getColumn("_clientIds")?.setFilterValue(undefined)}
+                  className="text-xs"
+                >
+                  <Check className={`h-3.5 w-3.5 mr-2 ${activeClientArr.length === 0 ? "opacity-100" : "opacity-0"}`} />
+                  {isRTL ? "كل العملاء" : "All Clients"}
+                </CommandItem>
+                {clientOptions.map((c) => (
+                  <CommandItem
+                    key={c.id}
+                    value={`${c.name} ${c.partner_id}`}
+                    onSelect={() => toggleClientFilter(c.id)}
+                    className="text-xs"
+                  >
+                    <Check className={`h-3.5 w-3.5 mr-2 shrink-0 ${activeClientArr.includes(c.id) ? "opacity-100" : "opacity-0"}`} />
+                    <span className="truncate">{c.name}</span>
+                  </CommandItem>
+                ))}
+              </CommandGroup>
+            </CommandList>
+          </Command>
+        </PopoverContent>
+      </Popover>
+
       <Popover open={prodOpen} onOpenChange={setProdOpen}>
         <PopoverTrigger asChild>
           <Button variant="outline" role="combobox" aria-expanded={prodOpen} className="w-full h-9 text-xs justify-between font-normal">
-            <span className="truncate">{activeProd || (isRTL ? "كل المنتجات" : "All Products")}</span>
+            <span className="truncate">{prodSummary}</span>
             <ChevronsUpDown className="h-3.5 w-3.5 shrink-0 opacity-50 ms-1" />
           </Button>
         </PopoverTrigger>
@@ -697,26 +861,20 @@ export default function ClientsPage() {
               <CommandGroup>
                 <CommandItem
                   value="__all__"
-                  onSelect={() => {
-                    table.getColumn("top_product_name")?.setFilterValue(undefined);
-                    setProdOpen(false);
-                  }}
+                  onSelect={() => table.getColumn("top_product_name")?.setFilterValue(undefined)}
                   className="text-xs"
                 >
-                  <Check className={`h-3.5 w-3.5 mr-2 ${!activeProd ? "opacity-100" : "opacity-0"}`} />
+                  <Check className={`h-3.5 w-3.5 mr-2 ${activeProdArr.length === 0 ? "opacity-100" : "opacity-0"}`} />
                   {isRTL ? "كل المنتجات" : "All Products"}
                 </CommandItem>
                 {productOptions.map((p) => (
                   <CommandItem
                     key={p}
                     value={p}
-                    onSelect={() => {
-                      table.getColumn("top_product_name")?.setFilterValue(activeProd === p ? undefined : p);
-                      setProdOpen(false);
-                    }}
+                    onSelect={() => toggleProductFilter(p)}
                     className="text-xs"
                   >
-                    <Check className={`h-3.5 w-3.5 mr-2 shrink-0 ${activeProd === p ? "opacity-100" : "opacity-0"}`} />
+                    <Check className={`h-3.5 w-3.5 mr-2 shrink-0 ${activeProdArr.includes(p) ? "opacity-100" : "opacity-0"}`} />
                     <span className="truncate">{p}</span>
                   </CommandItem>
                 ))}
@@ -729,7 +887,7 @@ export default function ClientsPage() {
       <Popover open={typeOpen} onOpenChange={setTypeOpen}>
         <PopoverTrigger asChild>
           <Button variant="outline" role="combobox" aria-expanded={typeOpen} className="w-full h-9 text-xs justify-between font-normal">
-            <span className="truncate">{activeType || (isRTL ? "كل الأنواع" : "All Types")}</span>
+            <span className="truncate">{typeSummary}</span>
             <ChevronsUpDown className="h-3.5 w-3.5 shrink-0 opacity-50 ms-1" />
           </Button>
         </PopoverTrigger>
@@ -741,26 +899,20 @@ export default function ClientsPage() {
               <CommandGroup>
                 <CommandItem
                   value="__all__"
-                  onSelect={() => {
-                    table.getColumn("customer_type")?.setFilterValue(undefined);
-                    setTypeOpen(false);
-                  }}
+                  onSelect={() => table.getColumn("customer_type")?.setFilterValue(undefined)}
                   className="text-xs"
                 >
-                  <Check className={`h-3.5 w-3.5 mr-2 ${!activeType ? "opacity-100" : "opacity-0"}`} />
+                  <Check className={`h-3.5 w-3.5 mr-2 ${activeTypeArr.length === 0 ? "opacity-100" : "opacity-0"}`} />
                   {isRTL ? "كل الأنواع" : "All Types"}
                 </CommandItem>
                 {typeOptions.map((ct) => (
                   <CommandItem
                     key={ct}
                     value={ct}
-                    onSelect={() => {
-                      table.getColumn("customer_type")?.setFilterValue(activeType === ct ? undefined : ct);
-                      setTypeOpen(false);
-                    }}
+                    onSelect={() => toggleTypeFilter(ct)}
                     className="text-xs"
                   >
-                    <Check className={`h-3.5 w-3.5 mr-2 shrink-0 ${activeType === ct ? "opacity-100" : "opacity-0"}`} />
+                    <Check className={`h-3.5 w-3.5 mr-2 shrink-0 ${activeTypeArr.includes(ct) ? "opacity-100" : "opacity-0"}`} />
                     {ct}
                   </CommandItem>
                 ))}
@@ -813,12 +965,50 @@ export default function ClientsPage() {
         </div>
       )}
 
-      {/* Product + Customer Type — desktop / tablet only */}
+      {/* Clients + Product + Customer type — desktop / tablet (multiselect) */}
       <div className="hidden md:flex items-center gap-2 flex-wrap">
+        <Popover open={clientFilterOpen} onOpenChange={setClientFilterOpen}>
+          <PopoverTrigger asChild>
+            <Button variant="outline" role="combobox" aria-expanded={clientFilterOpen} className="w-44 h-8 text-xs justify-between font-normal">
+              <span className="truncate">{clientSummary}</span>
+              <ChevronsUpDown className="h-3.5 w-3.5 shrink-0 opacity-50 ml-1" />
+            </Button>
+          </PopoverTrigger>
+          <PopoverContent className="w-64 p-0" align="start">
+            <Command>
+              <CommandInput placeholder={isRTL ? "ابحث عن عميل..." : "Search client..."} className="text-xs h-8" />
+              <CommandList>
+                <CommandEmpty className="text-xs py-3 text-center text-muted-foreground">{isRTL ? "لا توجد نتائج" : "No results"}</CommandEmpty>
+                <CommandGroup>
+                  <CommandItem
+                    value="__all_clients__"
+                    onSelect={() => table.getColumn("_clientIds")?.setFilterValue(undefined)}
+                    className="text-xs"
+                  >
+                    <Check className={`h-3.5 w-3.5 mr-2 ${activeClientArr.length === 0 ? "opacity-100" : "opacity-0"}`} />
+                    {isRTL ? "كل العملاء" : "All Clients"}
+                  </CommandItem>
+                  {clientOptions.map((c) => (
+                    <CommandItem
+                      key={c.id}
+                      value={`${c.name} ${c.partner_id}`}
+                      onSelect={() => toggleClientFilter(c.id)}
+                      className="text-xs"
+                    >
+                      <Check className={`h-3.5 w-3.5 mr-2 shrink-0 ${activeClientArr.includes(c.id) ? "opacity-100" : "opacity-0"}`} />
+                      <span className="truncate">{c.name}</span>
+                    </CommandItem>
+                  ))}
+                </CommandGroup>
+              </CommandList>
+            </Command>
+          </PopoverContent>
+        </Popover>
+
         <Popover open={prodOpen} onOpenChange={setProdOpen}>
           <PopoverTrigger asChild>
             <Button variant="outline" role="combobox" aria-expanded={prodOpen} className="w-44 h-8 text-xs justify-between font-normal">
-              <span className="truncate">{activeProd || (isRTL ? "كل المنتجات" : "All Products")}</span>
+              <span className="truncate">{prodSummary}</span>
               <ChevronsUpDown className="h-3.5 w-3.5 shrink-0 opacity-50 ml-1" />
             </Button>
           </PopoverTrigger>
@@ -830,26 +1020,20 @@ export default function ClientsPage() {
                 <CommandGroup>
                   <CommandItem
                     value="__all__"
-                    onSelect={() => {
-                      table.getColumn("top_product_name")?.setFilterValue(undefined);
-                      setProdOpen(false);
-                    }}
+                    onSelect={() => table.getColumn("top_product_name")?.setFilterValue(undefined)}
                     className="text-xs"
                   >
-                    <Check className={`h-3.5 w-3.5 mr-2 ${!activeProd ? "opacity-100" : "opacity-0"}`} />
+                    <Check className={`h-3.5 w-3.5 mr-2 ${activeProdArr.length === 0 ? "opacity-100" : "opacity-0"}`} />
                     {isRTL ? "كل المنتجات" : "All Products"}
                   </CommandItem>
                   {productOptions.map((p) => (
                     <CommandItem
                       key={p}
                       value={p}
-                      onSelect={() => {
-                        table.getColumn("top_product_name")?.setFilterValue(activeProd === p ? undefined : p);
-                        setProdOpen(false);
-                      }}
+                      onSelect={() => toggleProductFilter(p)}
                       className="text-xs"
                     >
-                      <Check className={`h-3.5 w-3.5 mr-2 shrink-0 ${activeProd === p ? "opacity-100" : "opacity-0"}`} />
+                      <Check className={`h-3.5 w-3.5 mr-2 shrink-0 ${activeProdArr.includes(p) ? "opacity-100" : "opacity-0"}`} />
                       <span className="truncate">{p}</span>
                     </CommandItem>
                   ))}
@@ -862,7 +1046,7 @@ export default function ClientsPage() {
         <Popover open={typeOpen} onOpenChange={setTypeOpen}>
           <PopoverTrigger asChild>
             <Button variant="outline" role="combobox" aria-expanded={typeOpen} className="w-36 h-8 text-xs justify-between font-normal">
-              <span className="truncate">{activeType || (isRTL ? "كل الأنواع" : "All Types")}</span>
+              <span className="truncate">{typeSummary}</span>
               <ChevronsUpDown className="h-3.5 w-3.5 shrink-0 opacity-50 ml-1" />
             </Button>
           </PopoverTrigger>
@@ -874,26 +1058,20 @@ export default function ClientsPage() {
                 <CommandGroup>
                   <CommandItem
                     value="__all__"
-                    onSelect={() => {
-                      table.getColumn("customer_type")?.setFilterValue(undefined);
-                      setTypeOpen(false);
-                    }}
+                    onSelect={() => table.getColumn("customer_type")?.setFilterValue(undefined)}
                     className="text-xs"
                   >
-                    <Check className={`h-3.5 w-3.5 mr-2 ${!activeType ? "opacity-100" : "opacity-0"}`} />
+                    <Check className={`h-3.5 w-3.5 mr-2 ${activeTypeArr.length === 0 ? "opacity-100" : "opacity-0"}`} />
                     {isRTL ? "كل الأنواع" : "All Types"}
                   </CommandItem>
                   {typeOptions.map((ct) => (
                     <CommandItem
                       key={ct}
                       value={ct}
-                      onSelect={() => {
-                        table.getColumn("customer_type")?.setFilterValue(activeType === ct ? undefined : ct);
-                        setTypeOpen(false);
-                      }}
+                      onSelect={() => toggleTypeFilter(ct)}
                       className="text-xs"
                     >
-                      <Check className={`h-3.5 w-3.5 mr-2 shrink-0 ${activeType === ct ? "opacity-100" : "opacity-0"}`} />
+                      <Check className={`h-3.5 w-3.5 mr-2 shrink-0 ${activeTypeArr.includes(ct) ? "opacity-100" : "opacity-0"}`} />
                       {ct}
                     </CommandItem>
                   ))}

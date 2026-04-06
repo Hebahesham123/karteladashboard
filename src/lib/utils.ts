@@ -61,18 +61,28 @@ export function getStatusColor(status: ClientStatus): string {
   }
 }
 
-/** Exclude from salesperson meter rankings (e.g. internal staff not a field rep). Matched on first name token. */
+/** Exclude from salesperson meter rankings (e.g. internal staff not a field rep). */
 export function isExcludedFromSalesLeaderboard(displayName: string): boolean {
-  const first = (displayName || "").trim().split(/\s+/)[0]?.toLowerCase() ?? "";
-  return first === "aml";
+  const raw = (displayName || "").trim();
+  if (!raw) return false;
+  try {
+    const norm = raw.normalize("NFKC").toLowerCase();
+    if (/\baml\b/.test(norm)) return true;
+    const first = norm.split(/\s+/)[0] ?? "";
+    if (first === "aml" || first.startsWith("aml")) return true;
+  } catch {
+    const low = raw.toLowerCase();
+    if (/\baml\b/.test(low) || low.startsWith("aml")) return true;
+  }
+  return false;
 }
 
 /** Exclude from client meter rankings (aggregate / non-client lines that should not appear as a ranked customer). */
 export function isExcludedFromClientLeaderboard(clientName: string): boolean {
   const n = (clientName || "").replace(/\s+/g, " ").trim();
   if (!n) return false;
-  if (n.includes("اكسسوار ستارة") && n.includes("تجزئة")) return true;
-  if (/curtain\s*accessory/i.test(n) && /retail|client/i.test(n)) return true;
+  if (n.includes("اكسسوار ستارة")) return true;
+  if (/curtain\s*accessory/i.test(n)) return true;
   return false;
 }
 
