@@ -8,9 +8,11 @@ import { Navbar } from "@/components/layout/Navbar";
 import { createClient } from "@/lib/supabase/client";
 import { useStore } from "@/store/useStore";
 
+const MOBILE_MQ = "(max-width: 767px)";
+
 export default function AppLayout({ children }: { children: React.ReactNode }) {
   const router = useRouter();
-  const { locale, setLocale, sidebarCollapsed, toggleSidebar, currentUser, setCurrentUser, setSalespersonId } = useStore();
+  const { locale, setLocale, sidebarCollapsed, toggleSidebar, setSidebarCollapsed, currentUser, setCurrentUser, setSalespersonId } = useStore();
   const [loading, setLoading] = useState(true);
   const isRTL = locale === "ar";
 
@@ -72,6 +74,17 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
     document.documentElement.dir = isRTL ? "rtl" : "ltr";
   }, [locale, isRTL]);
 
+  // On narrow viewports, start with drawer closed (CSS also hides the 72px rail via max-md:!w-0)
+  useEffect(() => {
+    const mq = window.matchMedia(MOBILE_MQ);
+    const apply = () => {
+      if (mq.matches) setSidebarCollapsed(true);
+    };
+    apply();
+    mq.addEventListener("change", apply);
+    return () => mq.removeEventListener("change", apply);
+  }, [setSidebarCollapsed]);
+
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-background">
@@ -89,16 +102,29 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
 
   return (
     <div dir={isRTL ? "rtl" : "ltr"} className="min-h-screen bg-background">
+      {!sidebarCollapsed && (
+        <button
+          type="button"
+          aria-label="Close menu"
+          className="fixed inset-0 z-[35] bg-black/50 md:hidden"
+          onClick={() => toggleSidebar()}
+        />
+      )}
       <Sidebar
         role={(currentUser?.role as "admin" | "sales") || "sales"}
         isCollapsed={sidebarCollapsed}
         onToggle={toggleSidebar}
         onSignOut={handleSignOut}
         locale={locale}
+        onNavigate={() => {
+          if (typeof window !== "undefined" && window.matchMedia(MOBILE_MQ).matches) {
+            setSidebarCollapsed(true);
+          }
+        }}
       />
 
       <div
-        className="transition-all duration-200"
+        className="min-w-0 transition-[margin] duration-200 max-md:!mx-0"
         style={{
           [isRTL ? "marginRight" : "marginLeft"]: `${sidebarWidth}px`,
         }}
@@ -110,7 +136,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
           onMenuToggle={toggleSidebar}
         />
 
-        <main className="p-6">
+        <main className="p-2 pb-4 sm:p-4 md:p-6 overflow-x-hidden max-w-[100vw]">
           <AnimatePresence mode="wait">
             <motion.div
               key={typeof window !== "undefined" ? window.location.pathname : ""}

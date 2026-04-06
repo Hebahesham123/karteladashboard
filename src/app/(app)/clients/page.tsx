@@ -42,7 +42,7 @@ import { UpdateStatusDialog } from "@/components/clients/UpdateStatusDialog";
 import { AddNoteDialog } from "@/components/clients/AddNoteDialog";
 import { createClient } from "@/lib/supabase/client";
 import { useStore } from "@/store/useStore";
-import { getLevelBadgeColor, getStatusColor, formatNumber } from "@/lib/utils";
+import { getLevelBadgeColor, getStatusColor, formatNumber, cn } from "@/lib/utils";
 import { dataCache } from "@/lib/dataCache";
 import type { ClientStatus, OrderLevel } from "@/types/database";
 
@@ -650,6 +650,11 @@ export default function ClientsPage() {
     initialState: { pagination: { pageSize: 20 } },
   });
 
+  const productOptions = Array.from(new Set(clients.map((c) => c.top_product_name).filter(Boolean))).sort() as string[];
+  const typeOptions = Array.from(new Set(clients.map((c) => c.customer_type).filter(Boolean))).sort() as string[];
+  const activeProd = (table.getColumn("top_product_name")?.getFilterValue() as string) ?? "";
+  const activeType = (table.getColumn("customer_type")?.getFilterValue() as string) ?? "";
+
   const handleExport = async () => {
     const { utils, writeFile } = await import("xlsx");
     const ws = utils.json_to_sheet(
@@ -673,120 +678,241 @@ export default function ClientsPage() {
     writeFile(wb, "clients.xlsx");
   };
 
+  const productTypeMobileExtra = (
+    <div className="flex flex-col gap-3">
+      <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">
+        {isRTL ? "من الجدول" : "Table filters"}
+      </p>
+      <Popover open={prodOpen} onOpenChange={setProdOpen}>
+        <PopoverTrigger asChild>
+          <Button variant="outline" role="combobox" aria-expanded={prodOpen} className="w-full h-9 text-xs justify-between font-normal">
+            <span className="truncate">{activeProd || (isRTL ? "كل المنتجات" : "All Products")}</span>
+            <ChevronsUpDown className="h-3.5 w-3.5 shrink-0 opacity-50 ms-1" />
+          </Button>
+        </PopoverTrigger>
+        <PopoverContent className="w-[min(100vw-2rem,20rem)] p-0" align="start">
+          <Command>
+            <CommandInput placeholder={isRTL ? "ابحث عن منتج..." : "Search product..."} className="text-xs h-8" />
+            <CommandList>
+              <CommandEmpty className="text-xs py-3 text-center text-muted-foreground">{isRTL ? "لا توجد نتائج" : "No results"}</CommandEmpty>
+              <CommandGroup>
+                <CommandItem
+                  value="__all__"
+                  onSelect={() => {
+                    table.getColumn("top_product_name")?.setFilterValue(undefined);
+                    setProdOpen(false);
+                  }}
+                  className="text-xs"
+                >
+                  <Check className={`h-3.5 w-3.5 mr-2 ${!activeProd ? "opacity-100" : "opacity-0"}`} />
+                  {isRTL ? "كل المنتجات" : "All Products"}
+                </CommandItem>
+                {productOptions.map((p) => (
+                  <CommandItem
+                    key={p}
+                    value={p}
+                    onSelect={() => {
+                      table.getColumn("top_product_name")?.setFilterValue(activeProd === p ? undefined : p);
+                      setProdOpen(false);
+                    }}
+                    className="text-xs"
+                  >
+                    <Check className={`h-3.5 w-3.5 mr-2 shrink-0 ${activeProd === p ? "opacity-100" : "opacity-0"}`} />
+                    <span className="truncate">{p}</span>
+                  </CommandItem>
+                ))}
+              </CommandGroup>
+            </CommandList>
+          </Command>
+        </PopoverContent>
+      </Popover>
+
+      <Popover open={typeOpen} onOpenChange={setTypeOpen}>
+        <PopoverTrigger asChild>
+          <Button variant="outline" role="combobox" aria-expanded={typeOpen} className="w-full h-9 text-xs justify-between font-normal">
+            <span className="truncate">{activeType || (isRTL ? "كل الأنواع" : "All Types")}</span>
+            <ChevronsUpDown className="h-3.5 w-3.5 shrink-0 opacity-50 ms-1" />
+          </Button>
+        </PopoverTrigger>
+        <PopoverContent className="w-[min(100vw-2rem,20rem)] p-0" align="start">
+          <Command>
+            <CommandInput placeholder={isRTL ? "ابحث..." : "Search..."} className="text-xs h-8" />
+            <CommandList>
+              <CommandEmpty className="text-xs py-3 text-center text-muted-foreground">{isRTL ? "لا توجد نتائج" : "No results"}</CommandEmpty>
+              <CommandGroup>
+                <CommandItem
+                  value="__all__"
+                  onSelect={() => {
+                    table.getColumn("customer_type")?.setFilterValue(undefined);
+                    setTypeOpen(false);
+                  }}
+                  className="text-xs"
+                >
+                  <Check className={`h-3.5 w-3.5 mr-2 ${!activeType ? "opacity-100" : "opacity-0"}`} />
+                  {isRTL ? "كل الأنواع" : "All Types"}
+                </CommandItem>
+                {typeOptions.map((ct) => (
+                  <CommandItem
+                    key={ct}
+                    value={ct}
+                    onSelect={() => {
+                      table.getColumn("customer_type")?.setFilterValue(activeType === ct ? undefined : ct);
+                      setTypeOpen(false);
+                    }}
+                    className="text-xs"
+                  >
+                    <Check className={`h-3.5 w-3.5 mr-2 shrink-0 ${activeType === ct ? "opacity-100" : "opacity-0"}`} />
+                    {ct}
+                  </CommandItem>
+                ))}
+              </CommandGroup>
+            </CommandList>
+          </Command>
+        </PopoverContent>
+      </Popover>
+    </div>
+  );
+
   return (
-    <div className="space-y-6">
+    <div className="space-y-3 md:space-y-6">
       {/* Header */}
-      <div className="flex items-start justify-between gap-4 flex-wrap">
-        <div>
-          <h1 className="text-2xl font-bold">{t.title}</h1>
-          <p className="text-muted-foreground text-sm mt-1">{t.subtitle}</p>
+      <div className="flex items-start justify-between gap-2 md:gap-4 flex-wrap">
+        <div className="min-w-0">
+          <h1 className="text-lg md:text-2xl font-bold">{t.title}</h1>
+          <p className="text-muted-foreground text-xs md:text-sm mt-0.5 md:mt-1">{t.subtitle}</p>
         </div>
-        <div className="flex items-center gap-2">
-          <Button variant="outline" size="sm" onClick={() => { dataCache.invalidate("clients_v9:"); fetchClients(true); }} className="gap-2">
-            <RefreshCw className="h-4 w-4" />
+        <div className="flex items-center gap-1.5 md:gap-2 shrink-0">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => {
+              dataCache.invalidate("clients_v9:");
+              fetchClients(true);
+            }}
+            className="gap-1.5 md:gap-2 h-8 text-xs md:text-sm px-2 md:px-3"
+          >
+            <RefreshCw className="h-3.5 w-3.5 md:h-4 md:w-4" />
             {isRTL ? "تحديث" : "Refresh"}
           </Button>
-          <Button variant="outline" size="sm" onClick={handleExport} className="gap-2">
-            <Download className="h-4 w-4" />
+          <Button variant="outline" size="sm" onClick={handleExport} className="gap-1.5 md:gap-2 h-8 text-xs md:text-sm px-2 md:px-3">
+            <Download className="h-3.5 w-3.5 md:h-4 md:w-4" />
             {t.export}
           </Button>
         </div>
       </div>
 
-      <FilterBar
-        locale={locale}
-        showStatus
-        showLevel
-        showSalesperson
-      />
+      <FilterBar locale={locale} showStatus showLevel showSalesperson mobileDrawerExtra={productTypeMobileExtra} />
 
-      {/* Product + Customer Type filters — searchable */}
-      {(() => {
-        const productOptions  = Array.from(new Set(clients.map(c => c.top_product_name).filter(Boolean))).sort() as string[];
-        const typeOptions     = Array.from(new Set(clients.map(c => c.customer_type).filter(Boolean))).sort() as string[];
-        const activeProd      = (table.getColumn("top_product_name")?.getFilterValue() as string) ?? "";
-        const activeType      = (table.getColumn("customer_type")?.getFilterValue() as string) ?? "";
-        return (
-          <div className="flex items-center gap-2 flex-wrap">
-            {/* Searchable Product filter */}
-            <Popover open={prodOpen} onOpenChange={setProdOpen}>
-              <PopoverTrigger asChild>
-                <Button variant="outline" role="combobox" aria-expanded={prodOpen}
-                  className="w-44 h-8 text-xs justify-between font-normal">
-                  <span className="truncate">{activeProd || (isRTL ? "كل المنتجات" : "All Products")}</span>
-                  <ChevronsUpDown className="h-3.5 w-3.5 shrink-0 opacity-50 ml-1" />
-                </Button>
-              </PopoverTrigger>
-              <PopoverContent className="w-56 p-0" align="start">
-                <Command>
-                  <CommandInput placeholder={isRTL ? "ابحث عن منتج..." : "Search product..."} className="text-xs h-8" />
-                  <CommandList>
-                    <CommandEmpty className="text-xs py-3 text-center text-muted-foreground">
-                      {isRTL ? "لا توجد نتائج" : "No results"}
-                    </CommandEmpty>
-                    <CommandGroup>
-                      <CommandItem value="__all__" onSelect={() => { table.getColumn("top_product_name")?.setFilterValue(undefined); setProdOpen(false); }} className="text-xs">
-                        <Check className={`h-3.5 w-3.5 mr-2 ${!activeProd ? "opacity-100" : "opacity-0"}`} />
-                        {isRTL ? "كل المنتجات" : "All Products"}
-                      </CommandItem>
-                      {productOptions.map((p) => (
-                        <CommandItem key={p} value={p}
-                          onSelect={() => { table.getColumn("top_product_name")?.setFilterValue(activeProd === p ? undefined : p); setProdOpen(false); }}
-                          className="text-xs">
-                          <Check className={`h-3.5 w-3.5 mr-2 shrink-0 ${activeProd === p ? "opacity-100" : "opacity-0"}`} />
-                          <span className="truncate">{p}</span>
-                        </CommandItem>
-                      ))}
-                    </CommandGroup>
-                  </CommandList>
-                </Command>
-              </PopoverContent>
-            </Popover>
+      {selectedRows.size > 0 && (
+        <div className="md:hidden flex items-center justify-between gap-2 rounded-lg border border-primary/20 bg-primary/10 px-2 py-1.5 text-xs font-semibold text-primary">
+          <span>
+            {selectedRows.size} {isRTL ? "محدد" : "selected"}
+          </span>
+          <button type="button" className="opacity-70 hover:opacity-100" onClick={() => setSelectedRows(new Set())}>
+            ✕
+          </button>
+        </div>
+      )}
 
-            {/* Searchable Customer Type filter */}
-            <Popover open={typeOpen} onOpenChange={setTypeOpen}>
-              <PopoverTrigger asChild>
-                <Button variant="outline" role="combobox" aria-expanded={typeOpen}
-                  className="w-36 h-8 text-xs justify-between font-normal">
-                  <span className="truncate">{activeType || (isRTL ? "كل الأنواع" : "All Types")}</span>
-                  <ChevronsUpDown className="h-3.5 w-3.5 shrink-0 opacity-50 ml-1" />
-                </Button>
-              </PopoverTrigger>
-              <PopoverContent className="w-44 p-0" align="start">
-                <Command>
-                  <CommandInput placeholder={isRTL ? "ابحث..." : "Search..."} className="text-xs h-8" />
-                  <CommandList>
-                    <CommandEmpty className="text-xs py-3 text-center text-muted-foreground">
-                      {isRTL ? "لا توجد نتائج" : "No results"}
-                    </CommandEmpty>
-                    <CommandGroup>
-                      <CommandItem value="__all__" onSelect={() => { table.getColumn("customer_type")?.setFilterValue(undefined); setTypeOpen(false); }} className="text-xs">
-                        <Check className={`h-3.5 w-3.5 mr-2 ${!activeType ? "opacity-100" : "opacity-0"}`} />
-                        {isRTL ? "كل الأنواع" : "All Types"}
-                      </CommandItem>
-                      {typeOptions.map((ct) => (
-                        <CommandItem key={ct} value={ct}
-                          onSelect={() => { table.getColumn("customer_type")?.setFilterValue(activeType === ct ? undefined : ct); setTypeOpen(false); }}
-                          className="text-xs">
-                          <Check className={`h-3.5 w-3.5 mr-2 shrink-0 ${activeType === ct ? "opacity-100" : "opacity-0"}`} />
-                          {ct}
-                        </CommandItem>
-                      ))}
-                    </CommandGroup>
-                  </CommandList>
-                </Command>
-              </PopoverContent>
-            </Popover>
+      {/* Product + Customer Type — desktop / tablet only */}
+      <div className="hidden md:flex items-center gap-2 flex-wrap">
+        <Popover open={prodOpen} onOpenChange={setProdOpen}>
+          <PopoverTrigger asChild>
+            <Button variant="outline" role="combobox" aria-expanded={prodOpen} className="w-44 h-8 text-xs justify-between font-normal">
+              <span className="truncate">{activeProd || (isRTL ? "كل المنتجات" : "All Products")}</span>
+              <ChevronsUpDown className="h-3.5 w-3.5 shrink-0 opacity-50 ml-1" />
+            </Button>
+          </PopoverTrigger>
+          <PopoverContent className="w-56 p-0" align="start">
+            <Command>
+              <CommandInput placeholder={isRTL ? "ابحث عن منتج..." : "Search product..."} className="text-xs h-8" />
+              <CommandList>
+                <CommandEmpty className="text-xs py-3 text-center text-muted-foreground">{isRTL ? "لا توجد نتائج" : "No results"}</CommandEmpty>
+                <CommandGroup>
+                  <CommandItem
+                    value="__all__"
+                    onSelect={() => {
+                      table.getColumn("top_product_name")?.setFilterValue(undefined);
+                      setProdOpen(false);
+                    }}
+                    className="text-xs"
+                  >
+                    <Check className={`h-3.5 w-3.5 mr-2 ${!activeProd ? "opacity-100" : "opacity-0"}`} />
+                    {isRTL ? "كل المنتجات" : "All Products"}
+                  </CommandItem>
+                  {productOptions.map((p) => (
+                    <CommandItem
+                      key={p}
+                      value={p}
+                      onSelect={() => {
+                        table.getColumn("top_product_name")?.setFilterValue(activeProd === p ? undefined : p);
+                        setProdOpen(false);
+                      }}
+                      className="text-xs"
+                    >
+                      <Check className={`h-3.5 w-3.5 mr-2 shrink-0 ${activeProd === p ? "opacity-100" : "opacity-0"}`} />
+                      <span className="truncate">{p}</span>
+                    </CommandItem>
+                  ))}
+                </CommandGroup>
+              </CommandList>
+            </Command>
+          </PopoverContent>
+        </Popover>
 
-            {selectedRows.size > 0 && (
-              <span className="text-xs px-3 py-1.5 rounded-lg bg-primary/10 border border-primary/20 text-primary font-semibold">
-                {selectedRows.size} {isRTL ? "محدد" : "selected"}
-                <button className="ms-2 opacity-60 hover:opacity-100" onClick={() => setSelectedRows(new Set())}>✕</button>
-              </span>
-            )}
-          </div>
-        );
-      })()}
+        <Popover open={typeOpen} onOpenChange={setTypeOpen}>
+          <PopoverTrigger asChild>
+            <Button variant="outline" role="combobox" aria-expanded={typeOpen} className="w-36 h-8 text-xs justify-between font-normal">
+              <span className="truncate">{activeType || (isRTL ? "كل الأنواع" : "All Types")}</span>
+              <ChevronsUpDown className="h-3.5 w-3.5 shrink-0 opacity-50 ml-1" />
+            </Button>
+          </PopoverTrigger>
+          <PopoverContent className="w-44 p-0" align="start">
+            <Command>
+              <CommandInput placeholder={isRTL ? "ابحث..." : "Search..."} className="text-xs h-8" />
+              <CommandList>
+                <CommandEmpty className="text-xs py-3 text-center text-muted-foreground">{isRTL ? "لا توجد نتائج" : "No results"}</CommandEmpty>
+                <CommandGroup>
+                  <CommandItem
+                    value="__all__"
+                    onSelect={() => {
+                      table.getColumn("customer_type")?.setFilterValue(undefined);
+                      setTypeOpen(false);
+                    }}
+                    className="text-xs"
+                  >
+                    <Check className={`h-3.5 w-3.5 mr-2 ${!activeType ? "opacity-100" : "opacity-0"}`} />
+                    {isRTL ? "كل الأنواع" : "All Types"}
+                  </CommandItem>
+                  {typeOptions.map((ct) => (
+                    <CommandItem
+                      key={ct}
+                      value={ct}
+                      onSelect={() => {
+                        table.getColumn("customer_type")?.setFilterValue(activeType === ct ? undefined : ct);
+                        setTypeOpen(false);
+                      }}
+                      className="text-xs"
+                    >
+                      <Check className={`h-3.5 w-3.5 mr-2 shrink-0 ${activeType === ct ? "opacity-100" : "opacity-0"}`} />
+                      {ct}
+                    </CommandItem>
+                  ))}
+                </CommandGroup>
+              </CommandList>
+            </Command>
+          </PopoverContent>
+        </Popover>
+
+        {selectedRows.size > 0 && (
+          <span className="text-xs px-3 py-1.5 rounded-lg bg-primary/10 border border-primary/20 text-primary font-semibold">
+            {selectedRows.size} {isRTL ? "محدد" : "selected"}
+            <button type="button" className="ms-2 opacity-60 hover:opacity-100" onClick={() => setSelectedRows(new Set())}>
+              ✕
+            </button>
+          </span>
+        )}
+      </div>
 
       {/* Error banner */}
       {fetchError && (
@@ -805,32 +931,31 @@ export default function ClientsPage() {
       <Card>
         <CardContent className="p-0">
           {/* Search + count summary */}
-          <div className="p-4 border-b border-border flex items-center gap-4 flex-wrap">
-            <div className="relative max-w-sm flex-1">
-              <Search className={`absolute top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground ${isRTL ? "right-3" : "left-3"}`} />
+          <div className="p-2 md:p-4 border-b border-border flex flex-col gap-2 md:flex-row md:items-center md:gap-4">
+            <div className="relative w-full md:max-w-sm md:flex-1 min-w-0">
+              <Search className={`absolute top-1/2 -translate-y-1/2 h-3.5 w-3.5 md:h-4 md:w-4 text-muted-foreground ${isRTL ? "right-2.5 md:right-3" : "left-2.5 md:left-3"}`} />
               <Input
                 placeholder={t.search}
                 value={globalFilter}
                 onChange={(e) => setGlobalFilter(e.target.value)}
-                className={isRTL ? "pr-9" : "pl-9"}
+                className={cn("h-8 md:h-10 text-sm", isRTL ? "pr-8 md:pr-9" : "pl-8 md:pl-9")}
               />
             </div>
 
-            {/* Total / filtered count — always visible */}
             {!loading && (
-              <div className="flex items-center gap-2 shrink-0">
-                {/* Total loaded from DB */}
-                <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-primary/10 border border-primary/20 text-xs font-semibold text-primary">
-                  {isRTL ? "الإجمالي في قاعدة البيانات:" : "Total in DB:"}
-                  <span className="text-base font-bold">{clients.length.toLocaleString()}</span>
-                  {isRTL ? "عميل" : "clients"}
+              <div className="flex flex-wrap items-center gap-1.5 md:gap-2 shrink-0">
+                <span className="inline-flex flex-wrap items-center gap-1 px-2 py-1 md:px-3 md:py-1.5 rounded-md md:rounded-lg bg-primary/10 border border-primary/20 text-[10px] md:text-xs font-semibold text-primary leading-tight">
+                  <span className="whitespace-normal">{isRTL ? "إجمالي القاعدة:" : "Total in DB:"}</span>
+                  <span className="text-sm md:text-base font-bold tabular-nums">{clients.length.toLocaleString()}</span>
+                  <span>{isRTL ? "عميل" : "clients"}</span>
                 </span>
 
-                {/* Filtered count — only show when filters narrow it down */}
                 {table.getFilteredRowModel().rows.length !== clients.length && (
-                  <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-orange-50 border border-orange-200 text-xs font-semibold text-orange-700 dark:bg-orange-950/30 dark:border-orange-800 dark:text-orange-300">
-                    {isRTL ? "بعد التصفية:" : "After filter:"}
-                    <span className="text-base font-bold">{table.getFilteredRowModel().rows.length.toLocaleString()}</span>
+                  <span className="inline-flex flex-wrap items-center gap-1 px-2 py-1 md:px-3 md:py-1.5 rounded-md md:rounded-lg bg-orange-50 border border-orange-200 text-[10px] md:text-xs font-semibold text-orange-700 dark:bg-orange-950/30 dark:border-orange-800 dark:text-orange-300 leading-tight">
+                    <span>{isRTL ? "بعد التصفية:" : "Filtered:"}</span>
+                    <span className="text-sm md:text-base font-bold tabular-nums">
+                      {table.getFilteredRowModel().rows.length.toLocaleString()}
+                    </span>
                   </span>
                 )}
               </div>

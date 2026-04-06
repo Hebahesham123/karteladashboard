@@ -6,7 +6,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import {
   AreaChart, Area, PieChart, Pie, Cell,
   XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
-  ComposedChart, Bar, Line, Legend, LabelList,
+  BarChart, Bar, Legend,
 } from "recharts";
 import {
   Users, TrendingUp, TrendingDown, AlertTriangle, CheckCircle,
@@ -627,48 +627,48 @@ export default function DashboardPage() {
 
   if (loading && !hasLoadedOnce) {
     return (
-      <div className="space-y-6">
-        <div className="h-9 w-52 bg-muted rounded-lg animate-pulse" />
-        <div className="h-10 w-full bg-muted rounded-xl animate-pulse" />
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-          {Array(8).fill(0).map((_, i) => <div key={i} className="h-32 bg-muted rounded-2xl animate-pulse" />)}
+      <div className="space-y-3 md:space-y-6">
+        <div className="h-7 md:h-9 w-40 md:w-52 bg-muted rounded-lg animate-pulse" />
+        <div className="h-8 md:h-10 w-full bg-muted rounded-xl animate-pulse" />
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-2 md:gap-4">
+          {Array(8).fill(0).map((_, i) => <div key={i} className="h-24 md:h-32 bg-muted rounded-xl md:rounded-2xl animate-pulse" />)}
         </div>
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          {Array(3).fill(0).map((_, i) => <div key={i} className="h-72 bg-muted rounded-2xl animate-pulse" />)}
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-3 md:gap-6">
+          {Array(3).fill(0).map((_, i) => <div key={i} className="h-52 md:h-72 bg-muted rounded-xl md:rounded-2xl animate-pulse" />)}
         </div>
       </div>
     );
   }
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-3 md:space-y-5">
       {/* Header */}
-      <div className="flex items-center justify-between gap-4 flex-wrap">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight">{t.title}</h1>
-          <p className="text-muted-foreground text-sm mt-0.5">{t.subtitle}</p>
+      <div className="flex items-center justify-between gap-2 md:gap-4 flex-wrap">
+        <div className="min-w-0">
+          <h1 className="text-lg md:text-2xl font-bold tracking-tight">{t.title}</h1>
+          <p className="text-muted-foreground text-xs md:text-sm mt-0.5 leading-snug">{t.subtitle}</p>
         </div>
-        <Button variant="outline" size="sm" onClick={() => { dataCache.invalidate(); fetchData(true); }} className="gap-2 shrink-0 h-8">
+        <Button variant="outline" size="sm" onClick={() => { dataCache.invalidate(); fetchData(true); }} className="gap-1.5 md:gap-2 shrink-0 h-7 md:h-8 text-xs md:text-sm px-2 md:px-3">
           <Activity className="h-3.5 w-3.5" />
           {isRTL ? "تحديث" : "Refresh"}
         </Button>
       </div>
 
       {/* ── Unified filter bar ── */}
-      <div className="rounded-xl border border-border bg-card shadow-sm px-3 py-2 overflow-x-auto">
-        <div className="flex items-center gap-2 min-w-max">
+      <div className="rounded-lg md:rounded-xl border border-border bg-card shadow-sm px-2 py-1.5 md:px-3 md:py-2 overflow-x-auto -mx-0.5 md:mx-0">
+        <div className="flex items-center gap-1.5 md:gap-2 min-w-max">
           {/* Icon label */}
-          <div className="flex items-center gap-1.5 text-xs font-semibold text-muted-foreground shrink-0">
-            <Filter className="h-3.5 w-3.5" />
+          <div className="flex items-center gap-1 text-[10px] md:text-xs font-semibold text-muted-foreground shrink-0">
+            <Filter className="h-3 w-3 md:h-3.5 md:w-3.5" />
             <span>{isRTL ? "تصفية" : "Filter"}</span>
           </div>
 
-          <div className="w-px h-5 bg-border mx-1" />
+          <div className="w-px h-4 md:h-5 bg-border mx-0.5 md:mx-1" />
 
           {/* FROM */}
-          <span className="text-xs text-muted-foreground shrink-0">{isRTL ? "من" : "From"}</span>
+          <span className="text-[10px] md:text-xs text-muted-foreground shrink-0">{isRTL ? "من" : "From"}</span>
           <Select value={dashFrom.month.toString()} onValueChange={(v) => setDashFrom(p => ({ ...p, month: +v }))}>
-            <SelectTrigger className="w-28 h-8 text-xs"><SelectValue /></SelectTrigger>
+            <SelectTrigger className="w-[4.5rem] md:w-28 h-7 md:h-8 text-[10px] md:text-xs px-2"><SelectValue /></SelectTrigger>
             <SelectContent>
               {(isRTL ? MONTHS_AR : MONTHS_EN).map((m, i) => (
                 <SelectItem key={i + 1} value={(i + 1).toString()}>{m}</SelectItem>
@@ -676,18 +676,18 @@ export default function DashboardPage() {
             </SelectContent>
           </Select>
           <Select value={dashFrom.year.toString()} onValueChange={(v) => setDashFrom(p => ({ ...p, year: +v }))}>
-            <SelectTrigger className="w-20 h-8 text-xs"><SelectValue /></SelectTrigger>
+            <SelectTrigger className="w-[3.25rem] md:w-20 h-7 md:h-8 text-[10px] md:text-xs px-1.5 md:px-2"><SelectValue /></SelectTrigger>
             <SelectContent>
               {dashYears.map((y) => <SelectItem key={y} value={y.toString()}>{y}</SelectItem>)}
             </SelectContent>
           </Select>
 
-          <span className="text-muted-foreground text-xs shrink-0">→</span>
+          <span className="text-muted-foreground text-[10px] md:text-xs shrink-0">→</span>
 
           {/* TO */}
-          <span className="text-xs text-muted-foreground shrink-0">{isRTL ? "إلى" : "To"}</span>
+          <span className="text-[10px] md:text-xs text-muted-foreground shrink-0">{isRTL ? "إلى" : "To"}</span>
           <Select value={dashTo.month.toString()} onValueChange={(v) => setDashTo(p => ({ ...p, month: +v }))}>
-            <SelectTrigger className="w-28 h-8 text-xs"><SelectValue /></SelectTrigger>
+            <SelectTrigger className="w-[4.5rem] md:w-28 h-7 md:h-8 text-[10px] md:text-xs px-2"><SelectValue /></SelectTrigger>
             <SelectContent>
               {(isRTL ? MONTHS_AR : MONTHS_EN).map((m, i) => (
                 <SelectItem key={i + 1} value={(i + 1).toString()}>{m}</SelectItem>
@@ -695,20 +695,20 @@ export default function DashboardPage() {
             </SelectContent>
           </Select>
           <Select value={dashTo.year.toString()} onValueChange={(v) => setDashTo(p => ({ ...p, year: +v }))}>
-            <SelectTrigger className="w-20 h-8 text-xs"><SelectValue /></SelectTrigger>
+            <SelectTrigger className="w-[3.25rem] md:w-20 h-7 md:h-8 text-[10px] md:text-xs px-1.5 md:px-2"><SelectValue /></SelectTrigger>
             <SelectContent>
               {dashYears.map((y) => <SelectItem key={y} value={y.toString()}>{y}</SelectItem>)}
             </SelectContent>
           </Select>
 
-          <div className="w-px h-5 bg-border mx-1" />
+          <div className="w-px h-4 md:h-5 bg-border mx-0.5 md:mx-1" />
 
           {/* Salesperson */}
           {salespersons.length > 0 && (
             <Popover open={spOpen} onOpenChange={setSpOpen}>
               <PopoverTrigger asChild>
                 <Button variant="outline" role="combobox" aria-expanded={spOpen}
-                  className="w-44 h-8 text-xs justify-between font-normal shrink-0">
+                  className="w-32 md:w-44 h-7 md:h-8 text-[10px] md:text-xs justify-between font-normal shrink-0 px-2">
                   <span className="truncate">
                     {filters.selectedSalesperson
                       ? salespersons.find((s) => s.id === filters.selectedSalesperson)?.name
@@ -744,13 +744,13 @@ export default function DashboardPage() {
             </Popover>
           )}
 
-          <div className="w-px h-5 bg-border mx-1" />
+          <div className="w-px h-4 md:h-5 bg-border mx-0.5 md:mx-1" />
 
           {/* Product filter — searchable */}
           <Popover open={prodOpen} onOpenChange={setProdOpen}>
             <PopoverTrigger asChild>
               <Button variant="outline" role="combobox" aria-expanded={prodOpen}
-                className="w-40 h-8 text-xs justify-between font-normal shrink-0">
+                className="w-28 md:w-40 h-7 md:h-8 text-[10px] md:text-xs justify-between font-normal shrink-0 px-2">
                 <span className="truncate">
                   {selectedProduct ?? (isRTL ? "كل المنتجات" : "All Products")}
                 </span>
@@ -785,7 +785,7 @@ export default function DashboardPage() {
 
           {/* Customer Type filter */}
           <Select value={selectedCustType ?? "all"} onValueChange={(v) => setSelectedCustType(v === "all" ? null : v)}>
-            <SelectTrigger className="w-32 h-8 text-xs shrink-0">
+            <SelectTrigger className="w-[5.5rem] md:w-32 h-7 md:h-8 text-[10px] md:text-xs shrink-0 px-2">
               <SelectValue placeholder={isRTL ? "النوع" : "Type"} />
             </SelectTrigger>
             <SelectContent>
@@ -820,7 +820,7 @@ export default function DashboardPage() {
       {/* Multi-month notice — warn user that dashboard aggregates across months
           while the clients table is always per-month */}
       {(dashFrom.year !== dashTo.year || dashFrom.month !== dashTo.month) && (
-        <div className="rounded-xl border border-amber-200 bg-amber-50 dark:bg-amber-950/20 dark:border-amber-800 px-4 py-2.5 text-xs text-amber-700 dark:text-amber-300 flex items-start gap-2">
+        <div className="rounded-lg md:rounded-xl border border-amber-200 bg-amber-50 dark:bg-amber-950/20 dark:border-amber-800 px-2.5 py-1.5 md:px-4 md:py-2.5 text-[10px] md:text-xs text-amber-700 dark:text-amber-300 flex items-start gap-1.5 md:gap-2 leading-snug">
           <span className="shrink-0 mt-0.5">⚠️</span>
           <span>
             {isRTL
@@ -831,64 +831,64 @@ export default function DashboardPage() {
       )}
 
       {/* ── 4 Main KPI Summary Cards ── */}
-      <div className="grid grid-cols-2 xl:grid-cols-4 gap-3">
+      <div className="grid grid-cols-2 xl:grid-cols-4 gap-2 md:gap-3">
         {/* Orders */}
         <button onClick={() => router.push("/clients")}
-          className="rounded-2xl border border-purple-200 dark:border-purple-800 bg-gradient-to-br from-purple-50 to-purple-100/50 dark:from-purple-950/30 dark:to-purple-900/10 p-4 text-start hover:shadow-md transition-all group">
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-xs font-semibold text-purple-600 dark:text-purple-400">{isRTL ? "عدد الطلبات" : "Orders"}</span>
-            <div className="h-8 w-8 rounded-xl bg-purple-500/15 flex items-center justify-center group-hover:bg-purple-500/25 transition-colors">
-              <ShoppingCart className="h-4 w-4 text-purple-600 dark:text-purple-400" />
+          className="rounded-xl md:rounded-2xl border border-purple-200 dark:border-purple-800 bg-gradient-to-br from-purple-50 to-purple-100/50 dark:from-purple-950/30 dark:to-purple-900/10 p-2.5 md:p-4 text-start hover:shadow-md transition-all group min-w-0">
+          <div className="flex items-start justify-between gap-1 mb-1 md:mb-2">
+            <span className="text-[10px] md:text-xs font-semibold text-purple-600 dark:text-purple-400 leading-tight line-clamp-2">{isRTL ? "عدد الطلبات" : "Orders"}</span>
+            <div className="h-6 w-6 md:h-8 md:w-8 rounded-lg md:rounded-xl bg-purple-500/15 flex items-center justify-center group-hover:bg-purple-500/25 transition-colors shrink-0">
+              <ShoppingCart className="h-3 w-3 md:h-4 md:w-4 text-purple-600 dark:text-purple-400" />
             </div>
           </div>
-          <div className="text-2xl font-bold tabular-nums text-foreground">{formatNumber(orderCount)}</div>
-          <div className="text-[11px] text-muted-foreground mt-0.5">{isRTL ? "في الفترة المحددة" : "In selected period"}</div>
+          <div className="text-lg md:text-2xl font-bold tabular-nums text-foreground leading-tight">{formatNumber(orderCount)}</div>
+          <div className="text-[9px] md:text-[11px] text-muted-foreground mt-0.5 leading-tight line-clamp-2">{isRTL ? "في الفترة المحددة" : "In selected period"}</div>
         </button>
 
         {/* Meters */}
         <button onClick={() => { dataCache.invalidate("clients_v9:"); setFilter("selectedMonth", dashTo.month); setFilter("selectedYear", dashTo.year); setFilter("selectedLevel", null); router.push("/clients"); }}
-          className="rounded-2xl border border-blue-200 dark:border-blue-800 bg-gradient-to-br from-blue-50 to-blue-100/50 dark:from-blue-950/30 dark:to-blue-900/10 p-4 text-start hover:shadow-md transition-all group">
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-xs font-semibold text-blue-600 dark:text-blue-400">{t.totalMeters}</span>
-            <div className="h-8 w-8 rounded-xl bg-blue-500/15 flex items-center justify-center group-hover:bg-blue-500/25 transition-colors">
-              <TrendingUp className="h-4 w-4 text-blue-600 dark:text-blue-400" />
+          className="rounded-xl md:rounded-2xl border border-blue-200 dark:border-blue-800 bg-gradient-to-br from-blue-50 to-blue-100/50 dark:from-blue-950/30 dark:to-blue-900/10 p-2.5 md:p-4 text-start hover:shadow-md transition-all group min-w-0">
+          <div className="flex items-start justify-between gap-1 mb-1 md:mb-2">
+            <span className="text-[10px] md:text-xs font-semibold text-blue-600 dark:text-blue-400 leading-tight line-clamp-2">{t.totalMeters}</span>
+            <div className="h-6 w-6 md:h-8 md:w-8 rounded-lg md:rounded-xl bg-blue-500/15 flex items-center justify-center group-hover:bg-blue-500/25 transition-colors shrink-0">
+              <TrendingUp className="h-3 w-3 md:h-4 md:w-4 text-blue-600 dark:text-blue-400" />
             </div>
           </div>
-          <div className="text-2xl font-bold tabular-nums text-foreground">{formatNumber(totalMeters)}<span className="text-sm font-medium ml-1">{isRTL ? "م" : "m"}</span></div>
-          <div className="flex items-center gap-1.5 mt-0.5">
+          <div className="text-lg md:text-2xl font-bold tabular-nums text-foreground leading-tight">{formatNumber(totalMeters)}<span className="text-xs md:text-sm font-medium ms-0.5">{isRTL ? "م" : "m"}</span></div>
+          <div className="flex flex-wrap items-center gap-1 mt-0.5">
             {metersGrowth !== 0 && (
-              <span className={`text-[11px] font-semibold ${metersGrowth > 0 ? "text-green-600" : "text-red-500"}`}>
+              <span className={`text-[9px] md:text-[11px] font-semibold ${metersGrowth > 0 ? "text-green-600" : "text-red-500"}`}>
                 {metersGrowth > 0 ? "▲" : "▼"} {Math.abs(metersGrowth).toFixed(1)}%
               </span>
             )}
-            <span className="text-[11px] text-muted-foreground">{t.vsLast}</span>
+            <span className="text-[9px] md:text-[11px] text-muted-foreground leading-tight">{t.vsLast}</span>
           </div>
         </button>
 
         {/* Clients */}
         <button onClick={() => { dataCache.invalidate("clients_v9:"); setFilter("selectedMonth", dashTo.month); setFilter("selectedYear", dashTo.year); setFilter("selectedLevel", null); router.push("/clients"); }}
-          className="rounded-2xl border border-green-200 dark:border-green-800 bg-gradient-to-br from-green-50 to-green-100/50 dark:from-green-950/30 dark:to-green-900/10 p-4 text-start hover:shadow-md transition-all group">
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-xs font-semibold text-green-600 dark:text-green-400">{isRTL ? "عملاء نشطون" : "Active Clients"}</span>
-            <div className="h-8 w-8 rounded-xl bg-green-500/15 flex items-center justify-center group-hover:bg-green-500/25 transition-colors">
-              <Users className="h-4 w-4 text-green-600 dark:text-green-400" />
+          className="rounded-xl md:rounded-2xl border border-green-200 dark:border-green-800 bg-gradient-to-br from-green-50 to-green-100/50 dark:from-green-950/30 dark:to-green-900/10 p-2.5 md:p-4 text-start hover:shadow-md transition-all group min-w-0">
+          <div className="flex items-start justify-between gap-1 mb-1 md:mb-2">
+            <span className="text-[10px] md:text-xs font-semibold text-green-600 dark:text-green-400 leading-tight line-clamp-2">{isRTL ? "عملاء نشطون" : "Active Clients"}</span>
+            <div className="h-6 w-6 md:h-8 md:w-8 rounded-lg md:rounded-xl bg-green-500/15 flex items-center justify-center group-hover:bg-green-500/25 transition-colors shrink-0">
+              <Users className="h-3 w-3 md:h-4 md:w-4 text-green-600 dark:text-green-400" />
             </div>
           </div>
-          <div className="text-2xl font-bold tabular-nums text-foreground">{(monthlyClientCount || uniqueClients).toLocaleString()}</div>
-          <div className="text-[11px] text-muted-foreground mt-0.5">{isRTL ? "من" : "of"} {totalClientCount.toLocaleString()} {isRTL ? "إجمالي" : "total"}</div>
+          <div className="text-lg md:text-2xl font-bold tabular-nums text-foreground leading-tight">{(monthlyClientCount || uniqueClients).toLocaleString()}</div>
+          <div className="text-[9px] md:text-[11px] text-muted-foreground mt-0.5 leading-tight">{isRTL ? "من" : "of"} {totalClientCount.toLocaleString()} {isRTL ? "إجمالي" : "total"}</div>
         </button>
 
         {/* Revenue */}
         <button onClick={() => router.push("/clients")}
-          className="rounded-2xl border border-amber-200 dark:border-amber-800 bg-gradient-to-br from-amber-50 to-amber-100/50 dark:from-amber-950/30 dark:to-amber-900/10 p-4 text-start hover:shadow-md transition-all group">
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-xs font-semibold text-amber-600 dark:text-amber-400">{isRTL ? "الإيراد الإجمالي" : "Total Revenue"}</span>
-            <div className="h-8 w-8 rounded-xl bg-amber-500/15 flex items-center justify-center group-hover:bg-amber-500/25 transition-colors">
-              <Activity className="h-4 w-4 text-amber-600 dark:text-amber-400" />
+          className="rounded-xl md:rounded-2xl border border-amber-200 dark:border-amber-800 bg-gradient-to-br from-amber-50 to-amber-100/50 dark:from-amber-950/30 dark:to-amber-900/10 p-2.5 md:p-4 text-start hover:shadow-md transition-all group min-w-0">
+          <div className="flex items-start justify-between gap-1 mb-1 md:mb-2">
+            <span className="text-[10px] md:text-xs font-semibold text-amber-600 dark:text-amber-400 leading-tight line-clamp-2">{isRTL ? "الإيراد الإجمالي" : "Total Revenue"}</span>
+            <div className="h-6 w-6 md:h-8 md:w-8 rounded-lg md:rounded-xl bg-amber-500/15 flex items-center justify-center group-hover:bg-amber-500/25 transition-colors shrink-0">
+              <Activity className="h-3 w-3 md:h-4 md:w-4 text-amber-600 dark:text-amber-400" />
             </div>
           </div>
-          <div className="text-2xl font-bold tabular-nums text-foreground">{formatNumber(totalRevenue)}</div>
-          <div className="text-[11px] text-muted-foreground mt-0.5">EGP</div>
+          <div className="text-lg md:text-2xl font-bold tabular-nums text-foreground leading-tight">{formatNumber(totalRevenue)}</div>
+          <div className="text-[9px] md:text-[11px] text-muted-foreground mt-0.5">EGP</div>
         </button>
       </div>
 
@@ -1013,46 +1013,46 @@ export default function DashboardPage() {
         );
       })()}
 
-      {/* Row 1: Revenue vs Meters ComposedChart + Distribution */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Combined Chart: Revenue (Orders) vs Meters */}
-        <div className="lg:col-span-2">
+      {/* Row 1: Clustered monthly chart + Distribution */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-3 md:gap-6">
+        {/* Clustered bars: meters, clients, orders per month */}
+        <div className="lg:col-span-2 min-w-0">
           <Card className="h-full">
-            <CardHeader className="pb-2">
-              <div className="flex items-center justify-between flex-wrap gap-2">
-                <div>
-                  <CardTitle className="text-base">
-                    {isRTL ? "الطلبات مقابل الأمتار" : "Revenue vs Meters"}
+            <CardHeader className="pb-1.5 md:pb-2 px-3 md:px-6 pt-3 md:pt-6">
+              <div className="flex items-center justify-between flex-wrap gap-1.5 md:gap-2">
+                <div className="min-w-0">
+                  <CardTitle className="text-sm md:text-base">
+                    {isRTL ? "الأمتار والعملاء والطلبات" : "Meters, clients & orders"}
                   </CardTitle>
-                  <p className="text-xs text-muted-foreground mt-0.5">
+                  <p className="text-[10px] md:text-xs text-muted-foreground mt-0.5 leading-snug line-clamp-2 md:line-clamp-none">
                     {isRTL
-                      ? "الأعمدة البنفسجية = عدد الطلبات  •  الخط الأزرق = إجمالي الأمتار"
-                      : "Purple bars = number of orders  •  Blue line = total meters"}
+                      ? "ثلاثة أعمدة لكل شهر — الأزرق = الأمتار (المحور الأيمن)، الأخضر = العملاء، البنفسجي = الطلبات (المحور الأيسر)"
+                      : "Three bars per month — blue = meters (right axis), green = clients, purple = orders (left axis)"}
                   </p>
                 </div>
-                <span className="text-xs text-muted-foreground flex items-center gap-1">
-                  <Eye className="h-3.5 w-3.5" />{t.clickChart}
+                <span className="text-[10px] md:text-xs text-muted-foreground flex items-center gap-0.5 md:gap-1 shrink-0 max-w-[40%] md:max-w-none justify-end">
+                  <Eye className="h-3 w-3 md:h-3.5 md:w-3.5 shrink-0 hidden sm:block" /><span className="line-clamp-2 md:line-clamp-none text-end">{t.clickChart}</span>
                 </span>
               </div>
             </CardHeader>
-            <CardContent>
-              <ResponsiveContainer width="100%" height={280}>
-                <ComposedChart
+            <CardContent className="px-2 pb-3 pt-0 md:px-6 md:pb-6">
+              <div className="h-[200px] md:h-[280px] w-full">
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart
                   data={monthlyTrend.map(d => ({ ...d, month: months[d.monthIdx] }))}
-                  margin={{ top: 28, right: 48, left: 0, bottom: 0 }}
+                  margin={{ top: 8, right: 48, left: 4, bottom: 0 }}
+                  barCategoryGap="18%"
                 >
                   <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" vertical={false} />
                   <XAxis dataKey="month" tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }} axisLine={false} tickLine={false} />
-                  {/* Left axis — Orders (purple bars) */}
                   <YAxis
-                    yAxisId="orders"
+                    yAxisId="counts"
                     orientation="left"
-                    tick={{ fontSize: 10, fill: "#8b5cf6" }}
+                    tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }}
                     axisLine={false} tickLine={false}
                     tickFormatter={(v) => v >= 1000 ? `${(v/1000).toFixed(0)}k` : String(v)}
                     width={38}
                   />
-                  {/* Right axis — Meters (blue line) */}
                   <YAxis
                     yAxisId="meters"
                     orientation="right"
@@ -1063,46 +1063,59 @@ export default function DashboardPage() {
                   />
                   <Tooltip content={<CustomTooltip />} />
                   <Legend wrapperStyle={{ fontSize: "11px", paddingTop: "6px" }} />
-                  {/* Orders bars — left axis */}
-                  <Bar yAxisId="orders" dataKey="orders" name={isRTL ? "عدد الطلبات" : "Orders"} fill="#8b5cf6" fillOpacity={0.85} radius={[4, 4, 0, 0]} maxBarSize={44}>
-                    <LabelList dataKey="orders" position="top" style={{ fontSize: 10, fill: "#8b5cf6", fontWeight: 700 }}
-                      formatter={(v: any) => v > 0 ? (v >= 1000 ? `${(v/1000).toFixed(1)}k` : v) : ""} />
-                  </Bar>
-                  {/* Meters line — right axis */}
-                  <Line
+                  <Bar
                     yAxisId="meters"
-                    type="monotone" dataKey="meters"
+                    dataKey="meters"
                     name={isRTL ? "الأمتار" : "Meters"}
-                    stroke="#3b82f6" strokeWidth={2.5}
-                    dot={{ fill: "#3b82f6", r: 4 }}
-                    activeDot={{ r: 7, strokeWidth: 0 }}
-                  >
-                    <LabelList dataKey="meters" position="top" style={{ fontSize: 10, fill: "#3b82f6", fontWeight: 700 }}
-                      formatter={(v: any) => v > 0 ? (v >= 1000 ? `${(v/1000).toFixed(1)}k` : v) : ""} />
-                  </Line>
-                </ComposedChart>
+                    fill="#3b82f6"
+                    fillOpacity={0.88}
+                    radius={[4, 4, 0, 0]}
+                    maxBarSize={28}
+                  />
+                  <Bar
+                    yAxisId="counts"
+                    dataKey="clients"
+                    name={isRTL ? "عدد العملاء" : "Clients"}
+                    fill="#10b981"
+                    fillOpacity={0.88}
+                    radius={[4, 4, 0, 0]}
+                    maxBarSize={28}
+                  />
+                  <Bar
+                    yAxisId="counts"
+                    dataKey="orders"
+                    name={isRTL ? "عدد الطلبات" : "Orders"}
+                    fill="#8b5cf6"
+                    fillOpacity={0.88}
+                    radius={[4, 4, 0, 0]}
+                    maxBarSize={28}
+                  />
+                </BarChart>
               </ResponsiveContainer>
+              </div>
             </CardContent>
           </Card>
         </div>
 
         {/* Pie Chart */}
         <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-base">{t.distribution}</CardTitle>
-            <p className="text-xs text-muted-foreground">
+          <CardHeader className="pb-1.5 md:pb-2 px-3 md:px-6 pt-3 md:pt-6">
+            <CardTitle className="text-sm md:text-base">{t.distribution}</CardTitle>
+            <p className="text-[10px] md:text-xs text-muted-foreground leading-snug">
               {isRTL
                 ? "🟢 جيد ≥100م  •  🟠 منخفض 1–99م  •  🔴 بدون أمتار  •  ⚫ غير نشط هذا الشهر"
                 : "🟢 Healthy ≥100m  •  🟠 Low 1–99m  •  🔴 0m (cartela only)  •  ⚫ Inactive this month"}
             </p>
           </CardHeader>
-          <CardContent>
-            <ResponsiveContainer width="100%" height={200}>
+          <CardContent className="px-3 pb-3 md:px-6 md:pb-6">
+            <div className="h-[160px] md:h-[200px] w-full">
+            <ResponsiveContainer width="100%" height="100%">
               <PieChart>
                 <Pie
                   data={pieData}
                   cx="50%" cy="50%"
-                  innerRadius={55} outerRadius={85}
+                  innerRadius={44}
+                  outerRadius={72}
                   dataKey="value"
                   onClick={(data: any) => {
                     const levelMap: Record<string, string> = {
@@ -1121,8 +1134,9 @@ export default function DashboardPage() {
                 <Tooltip content={<CustomTooltip />} />
               </PieChart>
             </ResponsiveContainer>
+            </div>
             {/* Legend */}
-            <div className="space-y-2 mt-2">
+            <div className="space-y-1 md:space-y-2 mt-1.5 md:mt-2">
               {pieData.map((d) => (
                 <button
                   key={d.name}
@@ -1136,7 +1150,7 @@ export default function DashboardPage() {
                     const level = levelMap[d.name];
                     if (level) { setFilter("selectedLevel", level); router.push("/clients"); }
                   }}
-                  className="flex items-center justify-between w-full px-2 py-1.5 rounded-lg hover:bg-muted/50 transition-colors text-sm group"
+                  className="flex items-center justify-between w-full px-1.5 py-1 md:px-2 md:py-1.5 rounded-lg hover:bg-muted/50 transition-colors text-xs md:text-sm group gap-1"
                 >
                   <div className="flex items-center gap-2">
                     <div className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: d.color }} />
@@ -1155,10 +1169,10 @@ export default function DashboardPage() {
 
       {/* Rankings — 3 columns */}
       <div>
-        <div className="flex items-center justify-between mb-3">
-          <div className="flex items-center gap-2">
-            <span className="text-base font-bold text-foreground">{isRTL ? "الترتيب" : "Rankings"}</span>
-            <span className="text-xs px-2.5 py-1 rounded-full bg-primary/10 text-primary border border-primary/20 font-semibold">
+        <div className="flex items-center justify-between mb-2 md:mb-3 gap-2">
+          <div className="flex items-center gap-1.5 md:gap-2 min-w-0 flex-wrap">
+            <span className="text-sm md:text-base font-bold text-foreground">{isRTL ? "الترتيب" : "Rankings"}</span>
+            <span className="text-[10px] md:text-xs px-2 py-0.5 md:px-2.5 md:py-1 rounded-full bg-primary/10 text-primary border border-primary/20 font-semibold leading-tight">
               {(isRTL ? MONTHS_AR : MONTHS_EN)[dashFrom.month - 1]} {dashFrom.year}
               {(dashFrom.month !== dashTo.month || dashFrom.year !== dashTo.year) && ` → ${(isRTL ? MONTHS_AR : MONTHS_EN)[dashTo.month - 1]} ${dashTo.year}`}
             </span>
@@ -1171,22 +1185,22 @@ export default function DashboardPage() {
           )}
         </div>
 
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-2 md:gap-4">
 
         {/* Salesperson Leaderboard */}
         <Card>
-          <CardHeader className="pb-3">
-            <CardTitle className="text-base flex items-center gap-2">
+          <CardHeader className="pb-2 md:pb-3 px-3 md:px-6 pt-3 md:pt-6">
+            <CardTitle className="text-sm md:text-base flex items-center gap-1.5 md:gap-2">
               <span>🏆</span>
               {isRTL ? "ترتيب المندوبين" : "Salesperson Ranking"}
             </CardTitle>
-            <p className="text-xs text-muted-foreground">
+            <p className="text-[10px] md:text-xs text-muted-foreground">
               {isRTL ? "مرتب حسب إجمالي الأمتار" : "Sorted by total meters"}
             </p>
           </CardHeader>
-          <CardContent className="px-3 pb-3">
+          <CardContent className="px-2 pb-2 md:px-3 md:pb-3">
             {leaderboard.length === 0 ? (
-              <p className="text-sm text-muted-foreground text-center py-8">
+              <p className="text-xs md:text-sm text-muted-foreground text-center py-4 md:py-8">
                 {isRTL ? "لا توجد بيانات" : "No data"}
               </p>
             ) : (
@@ -1196,20 +1210,20 @@ export default function DashboardPage() {
                   const pct  = Math.round((sp.meters / maxM) * 100);
                   const medal = i === 0 ? "🥇" : i === 1 ? "🥈" : i === 2 ? "🥉" : null;
                   return (
-                    <div key={i} className="flex items-center gap-3 px-2 py-1.5 rounded-lg hover:bg-muted/40 transition-colors">
-                      <span className="w-6 text-center text-sm font-bold text-muted-foreground shrink-0">
+                    <div key={i} className="flex items-center gap-2 md:gap-3 px-1 md:px-2 py-1 md:py-1.5 rounded-lg hover:bg-muted/40 transition-colors">
+                      <span className="w-5 md:w-6 text-center text-xs md:text-sm font-bold text-muted-foreground shrink-0">
                         {medal ?? `${i + 1}`}
                       </span>
                       <div className="flex-1 min-w-0">
-                        <div className="flex items-center justify-between mb-0.5">
-                          <span className="text-sm font-medium truncate">{sp.name}</span>
-                          <div className="text-end shrink-0 ms-2">
-                            <div className="text-sm font-bold tabular-nums">{formatNumber(Math.round(sp.meters))}m</div>
-                            {sp.revenue > 0 && <div className="text-[10px] text-muted-foreground">{formatNumber(Math.round(sp.revenue))} EGP</div>}
+                        <div className="flex items-center justify-between mb-0.5 gap-1">
+                          <span className="text-xs md:text-sm font-medium truncate">{sp.name}</span>
+                          <div className="text-end shrink-0 ms-1 md:ms-2">
+                            <div className="text-xs md:text-sm font-bold tabular-nums">{formatNumber(Math.round(sp.meters))}m</div>
+                            {sp.revenue > 0 && <div className="text-[9px] md:text-[10px] text-muted-foreground">{formatNumber(Math.round(sp.revenue))} EGP</div>}
                           </div>
                         </div>
-                        <div className="flex items-center gap-2">
-                          <div className="flex-1 h-1.5 bg-muted rounded-full overflow-hidden">
+                        <div className="flex items-center gap-1.5 md:gap-2">
+                          <div className="flex-1 h-1 md:h-1.5 bg-muted rounded-full overflow-hidden">
                             <div
                               className="h-full rounded-full transition-all duration-500"
                               style={{
@@ -1218,7 +1232,7 @@ export default function DashboardPage() {
                               }}
                             />
                           </div>
-                          <span className="text-xs text-muted-foreground shrink-0">
+                          <span className="text-[10px] md:text-xs text-muted-foreground shrink-0">
                             {sp.clients} {isRTL ? "عميل" : "clients"}
                           </span>
                         </div>
@@ -1233,18 +1247,18 @@ export default function DashboardPage() {
 
         {/* Product Ranking */}
         <Card>
-          <CardHeader className="pb-3">
-            <CardTitle className="text-base flex items-center gap-2">
+          <CardHeader className="pb-2 md:pb-3 px-3 md:px-6 pt-3 md:pt-6">
+            <CardTitle className="text-sm md:text-base flex items-center gap-1.5 md:gap-2">
               <span>📦</span>
               {isRTL ? "ترتيب المنتجات" : "Product Ranking"}
             </CardTitle>
-            <p className="text-xs text-muted-foreground">
+            <p className="text-[10px] md:text-xs text-muted-foreground">
               {isRTL ? "مرتب حسب الكمية المباعة (بالأمتار)" : "Sorted by quantity sold (meters)"}
             </p>
           </CardHeader>
-          <CardContent className="px-3 pb-3">
+          <CardContent className="px-2 pb-2 md:px-3 md:pb-3">
             {topProducts.length === 0 ? (
-              <p className="text-sm text-muted-foreground text-center py-8">
+              <p className="text-xs md:text-sm text-muted-foreground text-center py-4 md:py-8">
                 {isRTL ? "لا توجد بيانات" : "No data"}
               </p>
             ) : (
@@ -1254,17 +1268,17 @@ export default function DashboardPage() {
                   const pct  = Math.round((p.qty / maxQ) * 100);
                   const colors = ["#6366f1","#3b82f6","#06b6d4","#10b981","#f59e0b","#f97316","#ef4444","#ec4899","#8b5cf6","#84cc16"];
                   return (
-                    <div key={i} className="flex items-center gap-3 px-2 py-1.5 rounded-lg hover:bg-muted/40 transition-colors">
-                      <span className="w-6 text-center text-sm font-bold text-muted-foreground shrink-0">{i + 1}</span>
+                    <div key={i} className="flex items-center gap-2 md:gap-3 px-1 md:px-2 py-1 md:py-1.5 rounded-lg hover:bg-muted/40 transition-colors">
+                      <span className="w-5 md:w-6 text-center text-xs md:text-sm font-bold text-muted-foreground shrink-0">{i + 1}</span>
                       <div className="flex-1 min-w-0">
-                        <div className="flex items-center justify-between mb-0.5">
-                          <span className="text-sm font-medium truncate">{p.name}</span>
-                          <div className="text-end shrink-0 ms-2">
-                            <div className="text-sm font-bold tabular-nums">{formatNumber(Math.round(p.qty))}m</div>
-                            {p.revenue > 0 && <div className="text-[10px] text-muted-foreground">{formatNumber(Math.round(p.revenue))} EGP</div>}
+                        <div className="flex items-center justify-between mb-0.5 gap-1">
+                          <span className="text-xs md:text-sm font-medium truncate">{p.name}</span>
+                          <div className="text-end shrink-0 ms-1 md:ms-2">
+                            <div className="text-xs md:text-sm font-bold tabular-nums">{formatNumber(Math.round(p.qty))}m</div>
+                            {p.revenue > 0 && <div className="text-[9px] md:text-[10px] text-muted-foreground">{formatNumber(Math.round(p.revenue))} EGP</div>}
                           </div>
                         </div>
-                        <div className="h-1.5 bg-muted rounded-full overflow-hidden">
+                        <div className="h-1 md:h-1.5 bg-muted rounded-full overflow-hidden">
                           <div className="h-full rounded-full transition-all duration-500" style={{ width: `${pct}%`, backgroundColor: colors[i % colors.length] }} />
                         </div>
                       </div>
@@ -1278,18 +1292,18 @@ export default function DashboardPage() {
 
         {/* Client Ranking */}
         <Card>
-          <CardHeader className="pb-3">
-            <CardTitle className="text-base flex items-center gap-2">
+          <CardHeader className="pb-2 md:pb-3 px-3 md:px-6 pt-3 md:pt-6">
+            <CardTitle className="text-sm md:text-base flex items-center gap-1.5 md:gap-2">
               <span>👤</span>
               {isRTL ? "ترتيب العملاء" : "Client Ranking"}
             </CardTitle>
-            <p className="text-xs text-muted-foreground">
+            <p className="text-[10px] md:text-xs text-muted-foreground">
               {isRTL ? "مرتب حسب الأمتار المشتراة" : "Sorted by meters purchased"}
             </p>
           </CardHeader>
-          <CardContent className="px-3 pb-3">
+          <CardContent className="px-2 pb-2 md:px-3 md:pb-3">
             {topClients.length === 0 ? (
-              <p className="text-sm text-muted-foreground text-center py-8">{isRTL ? "لا توجد بيانات" : "No data"}</p>
+              <p className="text-xs md:text-sm text-muted-foreground text-center py-4 md:py-8">{isRTL ? "لا توجد بيانات" : "No data"}</p>
             ) : (
               <div className="space-y-1">
                 {topClients.map((c, i) => {
@@ -1297,20 +1311,20 @@ export default function DashboardPage() {
                   const pct  = Math.round((c.meters / maxM) * 100);
                   const medal = i === 0 ? "🥇" : i === 1 ? "🥈" : i === 2 ? "🥉" : null;
                   return (
-                    <div key={i} className="flex items-center gap-3 px-2 py-1.5 rounded-lg hover:bg-muted/40 transition-colors">
-                      <span className="w-6 text-center text-sm font-bold text-muted-foreground shrink-0">{medal ?? `${i + 1}`}</span>
+                    <div key={i} className="flex items-center gap-2 md:gap-3 px-1 md:px-2 py-1 md:py-1.5 rounded-lg hover:bg-muted/40 transition-colors">
+                      <span className="w-5 md:w-6 text-center text-xs md:text-sm font-bold text-muted-foreground shrink-0">{medal ?? `${i + 1}`}</span>
                       <div className="flex-1 min-w-0">
-                        <div className="flex items-center justify-between mb-0.5">
+                        <div className="flex items-center justify-between mb-0.5 gap-1">
                           <div className="min-w-0">
-                            <span className="text-sm font-medium truncate block">{c.name}</span>
-                            <span className="text-[10px] text-muted-foreground font-mono">{c.partner_id}</span>
+                            <span className="text-xs md:text-sm font-medium truncate block">{c.name}</span>
+                            <span className="text-[9px] md:text-[10px] text-muted-foreground font-mono">{c.partner_id}</span>
                           </div>
-                          <div className="text-end shrink-0 ms-2">
-                            <div className="text-sm font-bold tabular-nums">{formatNumber(Math.round(c.meters))}m</div>
-                            {c.revenue > 0 && <div className="text-[10px] text-muted-foreground">{formatNumber(Math.round(c.revenue))} EGP</div>}
+                          <div className="text-end shrink-0 ms-1 md:ms-2">
+                            <div className="text-xs md:text-sm font-bold tabular-nums">{formatNumber(Math.round(c.meters))}m</div>
+                            {c.revenue > 0 && <div className="text-[9px] md:text-[10px] text-muted-foreground">{formatNumber(Math.round(c.revenue))} EGP</div>}
                           </div>
                         </div>
-                        <div className="h-1.5 bg-muted rounded-full overflow-hidden">
+                        <div className="h-1 md:h-1.5 bg-muted rounded-full overflow-hidden">
                           <div className="h-full rounded-full transition-all duration-500 bg-violet-500" style={{ width: `${pct}%` }} />
                         </div>
                       </div>

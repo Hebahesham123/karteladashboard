@@ -23,9 +23,9 @@ interface NavItem {
 
 const navItems: NavItem[] = [
   { label: "Dashboard", href: "/dashboard", icon: LayoutDashboard, role: "admin" },
-  { label: "My Clients",  href: "/sales",     icon: TrendingUp,       role: "sales" },
-  { label: "Clients",     href: "/clients",   icon: Users,            role: "admin" },
-  { label: "Admin",       href: "/admin",     icon: Settings,         role: "admin" },
+  { label: "My Clients", href: "/sales", icon: TrendingUp, role: "sales" },
+  { label: "Clients", href: "/clients", icon: Users, role: "admin" },
+  { label: "Admin", href: "/admin", icon: Settings, role: "admin" },
 ];
 
 interface SidebarProps {
@@ -34,86 +34,77 @@ interface SidebarProps {
   onToggle: () => void;
   onSignOut: () => void;
   locale: string;
+  onNavigate?: () => void;
 }
 
-export function Sidebar({ role, isCollapsed, onToggle, onSignOut, locale }: SidebarProps) {
+export function Sidebar({ role, isCollapsed, onToggle, onSignOut, locale, onNavigate }: SidebarProps) {
   const pathname = usePathname();
   const isRTL = locale === "ar";
 
-  const filteredItems = navItems.filter(
-    (item) => item.role === "all" || item.role === role
-  );
+  const filteredItems = navItems.filter((item) => item.role === "all" || item.role === role);
 
   return (
-    <motion.aside
-      animate={{ width: isCollapsed ? 72 : 240 }}
-      transition={{ duration: 0.2, ease: "easeInOut" }}
+    <aside
       className={cn(
-        "fixed top-0 bottom-0 z-30 flex flex-col bg-card border-border",
-        isRTL ? "right-0 border-l" : "left-0 border-r"
+        "app-shell-sidebar fixed top-0 bottom-0 z-[40] flex flex-col bg-card border-border overflow-hidden transition-[width] duration-200 ease-in-out",
+        isRTL ? "right-0 border-l" : "left-0 border-r",
+        /* Desktop: 72px collapsed / 240px expanded — framer not used so max-md !w always wins on phones */
+        isCollapsed
+          ? "w-[72px] max-md:!w-0 max-md:!min-w-0 max-md:border-0 max-md:!shadow-none max-md:pointer-events-none"
+          : "w-[240px] max-md:!w-[min(260px,88vw)] max-md:max-w-[260px]"
       )}
     >
       {/* Logo */}
-      <div className="flex h-16 items-center justify-between px-4 border-b border-border">
+      <div className="flex h-14 md:h-16 items-center justify-between px-3 md:px-4 border-b border-border shrink-0">
         {!isCollapsed && (
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="flex items-center gap-2"
+            className="flex items-center gap-2 min-w-0"
           >
-            <div className="h-8 w-8 rounded-lg bg-primary flex items-center justify-center">
+            <div className="h-8 w-8 rounded-lg bg-primary flex items-center justify-center shrink-0">
               <span className="text-primary-foreground font-bold text-sm">C</span>
             </div>
-            <span className="font-bold text-foreground">
+            <span className="font-bold text-foreground truncate">
               {isRTL ? "كارتيلا" : "Cartela"}
             </span>
           </motion.div>
         )}
         {isCollapsed && (
-          <div className="mx-auto h-8 w-8 rounded-lg bg-primary flex items-center justify-center">
+          <div className="mx-auto h-8 w-8 rounded-lg bg-primary flex items-center justify-center max-md:hidden">
             <span className="text-primary-foreground font-bold text-sm">C</span>
           </div>
         )}
         {!isCollapsed && (
-          <button
-            onClick={onToggle}
-            className="rounded-lg p-1.5 hover:bg-accent transition-colors"
-          >
-            {isRTL ? (
-              <ChevronRight className="h-4 w-4" />
-            ) : (
-              <ChevronLeft className="h-4 w-4" />
-            )}
+          <button type="button" onClick={onToggle} className="rounded-lg p-1.5 hover:bg-accent transition-colors shrink-0">
+            {isRTL ? <ChevronRight className="h-4 w-4" /> : <ChevronLeft className="h-4 w-4" />}
           </button>
         )}
       </div>
 
-      {/* Toggle when collapsed */}
+      {/* Expand rail — desktop only (mobile uses navbar menu) */}
       {isCollapsed && (
         <button
+          type="button"
           onClick={onToggle}
-          className="mx-auto mt-2 rounded-lg p-1.5 hover:bg-accent transition-colors"
+          className="mx-auto mt-2 rounded-lg p-1.5 hover:bg-accent transition-colors max-md:hidden"
         >
-          {isRTL ? (
-            <ChevronLeft className="h-4 w-4" />
-          ) : (
-            <ChevronRight className="h-4 w-4" />
-          )}
+          {isRTL ? <ChevronLeft className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
         </button>
       )}
 
-      {/* Navigation */}
-      <nav className="flex-1 overflow-y-auto py-4 px-2">
-        <ul className="space-y-1">
+      <nav className="flex-1 overflow-y-auto py-3 md:py-4 px-2">
+        <ul className="space-y-0.5 md:space-y-1">
           {filteredItems.map((item) => {
             const isActive = pathname.startsWith(item.href);
             return (
               <li key={item.href}>
                 <Link
                   href={item.href}
+                  onClick={() => onNavigate?.()}
                   className={cn(
-                    "flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition-all duration-200",
+                    "flex items-center gap-3 rounded-xl px-3 py-2 md:py-2.5 text-sm font-medium transition-all duration-200",
                     isActive
                       ? "bg-primary text-primary-foreground shadow-sm"
                       : "text-muted-foreground hover:bg-accent hover:text-foreground",
@@ -123,11 +114,7 @@ export function Sidebar({ role, isCollapsed, onToggle, onSignOut, locale }: Side
                 >
                   <item.icon className="h-5 w-5 shrink-0" />
                   {!isCollapsed && (
-                    <motion.span
-                      initial={{ opacity: 0 }}
-                      animate={{ opacity: 1 }}
-                      className="truncate"
-                    >
+                    <motion.span initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="truncate">
                       {item.label}
                     </motion.span>
                   )}
@@ -138,12 +125,12 @@ export function Sidebar({ role, isCollapsed, onToggle, onSignOut, locale }: Side
         </ul>
       </nav>
 
-      {/* Sign out */}
-      <div className="border-t border-border p-2">
+      <div className="border-t border-border p-2 shrink-0">
         <button
+          type="button"
           onClick={onSignOut}
           className={cn(
-            "flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition-all duration-200",
+            "flex w-full items-center gap-3 rounded-xl px-3 py-2 md:py-2.5 text-sm font-medium text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition-all duration-200",
             isCollapsed && "justify-center"
           )}
         >
@@ -151,6 +138,6 @@ export function Sidebar({ role, isCollapsed, onToggle, onSignOut, locale }: Side
           {!isCollapsed && <span>{isRTL ? "تسجيل الخروج" : "Sign Out"}</span>}
         </button>
       </div>
-    </motion.aside>
+    </aside>
   );
 }

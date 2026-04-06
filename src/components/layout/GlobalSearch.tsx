@@ -147,17 +147,17 @@ export function GlobalSearch({ locale }: GlobalSearchProps) {
   );
 
   return (
-    <div ref={containerRef} className="relative flex-1 max-w-md">
+    <div ref={containerRef} className="relative flex-1 min-w-0 max-w-md max-md:max-w-[min(11rem,28vw)] sm:max-md:max-w-[14rem]">
       {/* Input */}
       <div className="relative">
-        <Search className={`absolute top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none z-10 ${isRTL ? "right-3" : "left-3"}`} />
+        <Search className={`absolute top-1/2 -translate-y-1/2 h-3.5 w-3.5 md:h-4 md:w-4 text-muted-foreground pointer-events-none z-10 ${isRTL ? "right-2 md:right-3" : "left-2 md:left-3"}`} />
         {loading && (
-          <Loader2 className={`absolute top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground animate-spin ${isRTL ? "left-3" : "right-3"}`} />
+          <Loader2 className={`absolute top-1/2 -translate-y-1/2 h-3 w-3 md:h-3.5 md:w-3.5 text-muted-foreground animate-spin ${isRTL ? "left-2 md:left-3" : "right-2 md:right-3"}`} />
         )}
         {!loading && query && (
           <button
             onClick={clear}
-            className={`absolute top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground hover:text-foreground transition-colors ${isRTL ? "left-3" : "right-3"}`}
+            className={`absolute top-1/2 -translate-y-1/2 h-3.5 w-3.5 md:h-4 md:w-4 text-muted-foreground hover:text-foreground transition-colors ${isRTL ? "left-2 md:left-3" : "right-2 md:right-3"}`}
           >
             <X className="h-4 w-4" />
           </button>
@@ -168,8 +168,8 @@ export function GlobalSearch({ locale }: GlobalSearchProps) {
           onChange={(e) => { setQuery(e.target.value); if (e.target.value.trim().length >= 2) setOpen(true); else setOpen(false); }}
           onFocus={() => { if (results.length > 0) setOpen(true); }}
           onKeyDown={onKeyDown}
-          placeholder={isRTL ? "ابحث عن عملاء، منتجات، مندوبين..." : "Search clients, products, salespersons..."}
-          className={`h-9 text-sm ${isRTL ? "pr-9 pl-8" : "pl-9 pr-8"}`}
+          placeholder={isRTL ? "بحث…" : "Search…"}
+          className={`h-8 text-xs md:h-9 md:text-sm ${isRTL ? "pr-8 pl-7 md:pr-9 md:pl-8" : "pl-8 pr-7 md:pl-9 md:pr-8"}`}
           autoComplete="off"
         />
       </div>
