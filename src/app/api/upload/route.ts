@@ -173,24 +173,36 @@ export async function POST(req: NextRequest) {
       const orderMonth = rowMonth >= 1 && rowMonth <= 12 ? rowMonth : Number(month);
       const orderYear  = rowYear  >= 2000 && rowYear  <= 2100 ? rowYear  : Number(year);
 
+      const qtyNum = Number(row.quantity) || 0;
+      const breakdown = Array.isArray(row.meter_breakdown)
+        ? row.meter_breakdown
+            .map((x: any) => ({
+              label: String(x?.label ?? x?.name ?? "").trim(),
+              meters: Number(x?.meters) || 0,
+            }))
+            .filter((x: { label: string; meters: number }) => x.label && x.meters > 0)
+        : [];
       orderInserts.push({
         client_id: clientId,
         salesperson_id: spId || null,
         product_id: productId,
         month: orderMonth,
         year: orderYear,
-        quantity: Number(row.quantity) || 0,
+        quantity: qtyNum,
         invoice_total: Number(row.invoice_total) || 0,
         branch: row.branch?.trim() || null,
         upload_batch_id: batchId,
+        ...(row.invoice_date && String(row.invoice_date).trim()
+          ? { invoice_date: String(row.invoice_date).trim().slice(0, 10) }
+          : {}),
+        ...(breakdown.length > 0 ? { meter_breakdown: breakdown } : {}),
       });
     }
 
     // ── Step 10: Upsert orders — parallel chunks of 500 ─────────────
     // Using UPSERT (onConflict) to prevent duplicate rows when the same
-    // Excel is uploaded more than once. Requires the unique constraint:
-    //   UNIQUE (client_id, product_id, month, year)
-    // If constraint doesn't exist yet, run FIX-duplicates-and-indexes.sql first.
+    // Excel is uploaded more than once. Requires:
+    //   UNIQUE (client_id, product_id, month, year, salesperson_id) — see ADD-orders-unique-with-salesperson.sql
     const CHUNK_SIZE  = 500;
     const CONCURRENCY = 5;
     let insertedOrders = 0;
@@ -207,7 +219,7 @@ export async function POST(req: NextRequest) {
       const results = await Promise.all(
         batch.map((chunk) =>
           db.from("orders")
-            .upsert(chunk, { onConflict: "client_id,product_id,month,year", ignoreDuplicates: false })
+            .upsert(chunk, { onConflict: "client_id,product_id,month,year,salesperson_id", ignoreDuplicates: false })
             .select("id")
         )
       );

@@ -20,7 +20,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { FilterBar } from "@/components/shared/FilterBar";
-import { UpdateStatusDialog } from "@/components/clients/UpdateStatusDialog";
+import { ClientStatusSelect } from "@/components/clients/ClientStatusSelect";
+import { PageBack } from "@/components/layout/PageBack";
 import { AddNoteDialog } from "@/components/clients/AddNoteDialog";
 import { createClient } from "@/lib/supabase/client";
 import { useStore } from "@/store/useStore";
@@ -90,7 +91,7 @@ export default function SalesPage() {
   const [sorting, setSorting]             = useState<SortingState>([]);
   const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>([]);
   const [selectedClient, setSelectedClient] = useState<SalesClientRow | null>(null);
-  const [dialogType, setDialogType]       = useState<"status" | "note" | null>(null);
+  const [dialogType, setDialogType]       = useState<"note" | null>(null);
   const [prodOpen, setProdOpen]           = useState(false);
   const [typeOpen, setTypeOpen]           = useState(false);
 
@@ -358,14 +359,27 @@ export default function SalesPage() {
     {
       accessorKey: "current_status",
       header: isRTL ? "الحالة" : "Status",
-      cell: ({ getValue }) => {
-        const status = getValue() as ClientStatus;
-        return (
-          <span className={`inline-flex px-2 py-0.5 rounded-full text-xs font-medium border ${getStatusColor(status)}`}>
-            {STATUS_LABELS[status]}
-          </span>
-        );
-      },
+      cell: ({ row }) => (
+        <ClientStatusSelect
+          compact
+          clientId={row.original.id}
+          clientName={row.original.name}
+          currentStatus={row.original.current_status}
+          locale={locale}
+          onUpdated={(newStatus) => {
+            setClients((prev) =>
+              prev.map((c) => (c.id === row.original.id ? { ...c, current_status: newStatus } : c))
+            );
+            setLogCache((p) => {
+              const n = { ...p };
+              delete n[row.original.id];
+              return n;
+            });
+            setExpanded((p) => ({ ...p, [row.original.id]: true }));
+            fetchClients();
+          }}
+        />
+      ),
     },
     // Note preview
     {
@@ -388,9 +402,6 @@ export default function SalesPage() {
       header: isRTL ? "إجراءات" : "Actions",
       cell: ({ row }) => (
         <div className="flex items-center gap-1">
-          <Button variant="outline" size="sm" onClick={() => { setSelectedClient(row.original); setDialogType("status"); }} className="h-7 px-2 text-xs">
-            {isRTL ? "حالة" : "Status"}
-          </Button>
           <Button variant="ghost" size="sm" onClick={() => { setSelectedClient(row.original); setDialogType("note"); }} className="h-7 px-2 text-xs">
             {isRTL ? "ملاحظة" : "Note"}
           </Button>
@@ -482,6 +493,7 @@ export default function SalesPage() {
 
   return (
     <div className="space-y-5">
+      <PageBack locale={locale} fallbackHref="/dashboard" />
       {/* Header */}
       <div className="flex items-start justify-between gap-4 flex-wrap">
         <div>
@@ -726,17 +738,8 @@ export default function SalesPage() {
                                     </div>
                                   )}
 
-                                  {/* Quick action buttons inside panel */}
+                                  {/* Quick action — status uses row dropdown */}
                                   <div className="flex items-center gap-2 pt-1">
-                                    <Button
-                                      size="sm"
-                                      variant="outline"
-                                      className="h-7 text-xs gap-1.5"
-                                      onClick={() => { setSelectedClient(row.original); setDialogType("status"); }}
-                                    >
-                                      <History className="h-3 w-3" />
-                                      {isRTL ? "تغيير الحالة" : "Change Status"}
-                                    </Button>
                                     <Button
                                       size="sm"
                                       variant="outline"
@@ -791,27 +794,6 @@ export default function SalesPage() {
       </Card>
 
       {/* Dialogs */}
-      {selectedClient && dialogType === "status" && (
-        <UpdateStatusDialog
-          client={selectedClient} locale={locale}
-          onClose={() => { setSelectedClient(null); setDialogType(null); }}
-          onSuccess={(newStatus?: string) => {
-            // Optimistically update status in the table row immediately
-            if (newStatus) {
-              setClients((prev) => prev.map((c) =>
-                c.id === selectedClient.id ? { ...c, current_status: newStatus as ClientStatus } : c
-              ));
-            }
-            // Invalidate log cache so expanded panel refreshes
-            setLogCache((p) => { const n = {...p}; delete n[selectedClient.id]; return n; });
-            // Re-open the log panel for this client so changes are visible
-            setExpanded((p) => ({ ...p, [selectedClient.id]: true }));
-            fetchClients();
-            setSelectedClient(null);
-            setDialogType(null);
-          }}
-        />
-      )}
       {selectedClient && dialogType === "note" && (
         <AddNoteDialog
           client={selectedClient} locale={locale}

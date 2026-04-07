@@ -6,9 +6,13 @@ interface FilterState {
   selectedMonth: number | null;
   selectedYear: number | null;   // null = All Years
   selectedSalesperson: string | null;
+  selectedSalespersons: string[];
+  selectedClient: string | null;
+  selectedClients: string[];
   selectedStatus: string | null;
   selectedLevel: string | null;
   selectedProduct: string | null;
+  selectedProducts: string[];
   searchQuery: string;
 }
 
@@ -44,9 +48,13 @@ const defaultFilters: FilterState = {
   selectedMonth: now.getMonth() + 1,     // 1–12, current month
   selectedYear:  now.getFullYear(),       // current year
   selectedSalesperson: null,
+  selectedSalespersons: [],
+  selectedClient: null,
+  selectedClients: [],
   selectedStatus: null,
   selectedLevel: null,
   selectedProduct: null,
+  selectedProducts: [],
   searchQuery: "",
 };
 

@@ -15,6 +15,8 @@ import { getLevelBadgeColor, getOrderLevel } from "@/lib/utils";
 
 interface ParsedRow {
   date_str: string;
+  /** YYYY-MM-DD from Excel Date column (incl. serial e.g. 46112) */
+  invoice_date: string;
   month: number;
   year: number;
   salesperson_code: string;
@@ -24,7 +26,7 @@ interface ParsedRow {
   product_name: string;
   quantity: number;                  // total meters from color variants
   invoice_total: number;             // sum of invoice amounts for this product+client+month
-  customer_type: string;             // e.g. استهلاكي / تجاري / جملة / VIP
+  customer_type: string;             // e.g. تجاري / جملة / VIP
   branch: string;                    // branch name
   cartela_qty: number;               // كارتله count (explicit or assumed=1)
   cartela_cross_month: boolean;      // true = كارتله came from a different month
@@ -44,8 +46,200 @@ interface UploadResult {
   salespersons: number;
 }
 
+interface DetectedLayoutInfo {
+  startRow: number;
+  inferred: boolean;
+  colDate: number;
+  colSP: number;
+  colPartnerName: number;
+  colPartnerId: number;
+  colProduct: number;
+  colVariant: number;
+  colQty: number;
+  colCartons: number;
+  colTotal: number;
+}
+
 const MONTHS_AR = ["يناير","فبراير","مارس","أبريل","مايو","يونيو","يوليو","أغسطس","سبتمبر","أكتوبر","نوفمبر","ديسمبر"];
 const MONTHS_EN = ["January","February","March","April","May","June","July","August","September","October","November","December"];
+
+/**
+ * Odoo / grouped exports often put Date + Salesperson only on the first line; the next lines leave
+ * those cells blank. There may also be an extra empty column (e.g. C) so Partner name / ID / Product
+ * shift right compared to our old defaults (name col 2, id col 3).
+ *
+ * We detect the Partner ID column (mostly 5–12 digit numeric strings), then place name = column before,
+ * product = column after. Variant = first column whose cells match COLOR / كارتل / attribute.
+ */
+function inferGroupedInvoiceColumns(raw: any[][], startRow: number): {
+  colDate: number;
+  colSP: number;
+  colPartnerName: number;
+  colPartnerId: number;
+  colProduct: number;
+  colVariant: number;
+  colQty: number;
+} | null {
+  const rows = raw
+    .slice(startRow, startRow + 50)
+    .filter(
+      (r) =>
+        r &&
+        r.length &&
+        r.some((c: any) => c !== null && c !== undefined && String(c).trim() !== "")
+    );
+  if (rows.length < 2) return null;
+
+  const w = Math.max(...rows.map((r) => r.length), 0);
+  let bestC = -1;
+  let bestScore = 0;
+  for (let c = 0; c < w; c++) {
+    let score = 0;
+    for (const r of rows) {
+      const t = String(r[c] ?? "").trim().replace(/\s/g, "");
+      if (/^\d{5,12}$/.test(t)) score++;
+    }
+    if (score > bestScore) {
+      bestScore = score;
+      bestC = c;
+    }
+  }
+  const minHits = Math.max(2, Math.ceil(rows.length * 0.35));
+  if (bestC < 1 || bestScore < minHits) return null;
+
+  const partnerNameCol = bestC - 1;
+  const partnerIdCol = bestC;
+  const productCol = Math.min(bestC + 1, w - 1);
+
+  const isDateLike = (v: any): boolean => {
+    if (v instanceof Date && !isNaN(v.getTime())) return true;
+    const s = String(v ?? "").trim();
+    if (!s) return false;
+    if (/^\d{4}-\d{1,2}-\d{1,2}$/.test(s)) return true;
+    if (/^\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}$/.test(s)) return true;
+    const n = Number(s);
+    return !isNaN(n) && n > 40000 && n < 70000; // Excel serial date range
+  };
+
+  const leftCols = Array.from({ length: Math.max(0, partnerNameCol) }, (_, i) => i);
+  let colDate = 0;
+  if (leftCols.length > 0) {
+    let bestDateCol = -1;
+    let bestDateScore = -1;
+    for (const c of leftCols) {
+      let hits = 0;
+      let nonEmpty = 0;
+      for (const r of rows) {
+        const v = r[c];
+        const t = String(v ?? "").trim();
+        if (!t) continue;
+        nonEmpty++;
+        if (isDateLike(v)) hits++;
+      }
+      const score = hits * 10 + nonEmpty;
+      if (hits > 0 && score > bestDateScore) {
+        bestDateScore = score;
+        bestDateCol = c;
+      }
+    }
+    if (bestDateCol >= 0) colDate = bestDateCol;
+  }
+
+  let colSP = 1;
+  if (leftCols.length > 0) {
+    let bestSpCol = -1;
+    let bestSpScore = -1;
+    for (const c of leftCols) {
+      if (c === colDate) continue;
+      let hits = 0;
+      let nonEmpty = 0;
+      for (const r of rows) {
+        const t = String(r[c] ?? "").trim();
+        if (!t) continue;
+        nonEmpty++;
+        const compact = t.replace(/\s/g, "");
+        const likelySp =
+          /[\/_]/.test(t) ||
+          /^[A-Z]{2,6}\d{3,7}$/i.test(compact) ||
+          (!isDateLike(t) && /[A-Za-z\u0600-\u06FF]/.test(t));
+        if (likelySp) hits++;
+      }
+      const score = hits * 10 + nonEmpty;
+      if (hits > 0 && score > bestSpScore) {
+        bestSpScore = score;
+        bestSpCol = c;
+      }
+    }
+    if (bestSpCol >= 0) colSP = bestSpCol;
+    else if (leftCols.includes(1) && 1 !== colDate) colSP = 1;
+    else colSP = leftCols.find((c) => c !== colDate) ?? colSP;
+  }
+
+  let variantCol = -1;
+  for (let c = 0; c < w; c++) {
+    if (c === partnerNameCol || c === partnerIdCol || c === productCol) continue;
+    const hit = rows.some((r) =>
+      /COLOR\s*:|كارتل|variant|attribute|لون/i.test(String(r[c] ?? ""))
+    );
+    if (hit) {
+      variantCol = c;
+      break;
+    }
+  }
+
+  let colQty = 5;
+  if (variantCol >= 0) {
+    const candidates = [
+      variantCol + 1,
+      variantCol - 1,
+      productCol + 1,
+      partnerIdCol + 2,
+      productCol - 1,
+    ].filter(
+      (c) => c >= 0 && c < w && c !== partnerNameCol && c !== partnerIdCol && c !== productCol
+    );
+    let found = false;
+    for (const tryC of candidates) {
+      const nums = rows.filter((r) => {
+        const v = parseFloat(String(r[tryC] ?? "").replace(/[^\d.]/g, ""));
+        return !isNaN(v) && v > 0;
+      }).length;
+      if (nums >= 1) {
+        colQty = tryC;
+        found = true;
+        break;
+      }
+    }
+    if (!found) {
+      for (let c = productCol + 1; c < w; c++) {
+        if (c === variantCol) continue;
+        const nums = rows.filter((r) => {
+          const v = parseFloat(String(r[c] ?? "").replace(/[^\d.]/g, ""));
+          return !isNaN(v) && v > 0;
+        }).length;
+        if (nums >= 1) {
+          colQty = c;
+          found = true;
+          break;
+        }
+      }
+    }
+    if (!found) {
+      if (variantCol === 5) colQty = 6;
+      else if (variantCol + 1 < w) colQty = variantCol + 1;
+    }
+  }
+
+  return {
+    colDate,
+    colSP,
+    colPartnerName: partnerNameCol,
+    colPartnerId: partnerIdCol,
+    colProduct: productCol,
+    colVariant: variantCol,
+    colQty,
+  };
+}
 
 export function ExcelUpload({ locale }: { locale: string }) {
   const { currentUser } = useStore();
@@ -62,6 +256,19 @@ export function ExcelUpload({ locale }: { locale: string }) {
   const [uploadResult, setUploadResult] = useState<UploadResult | null>(null);
   const [progress, setProgress] = useState(0);
   const [errorMsg, setErrorMsg] = useState("");
+  const [detectedLayout, setDetectedLayout] = useState<DetectedLayoutInfo | null>(null);
+
+  const colLabel = (idx: number) => {
+    if (idx < 0) return "—";
+    let n = idx + 1;
+    let out = "";
+    while (n > 0) {
+      const rem = (n - 1) % 26;
+      out = String.fromCharCode(65 + rem) + out;
+      n = Math.floor((n - 1) / 26);
+    }
+    return `${out} (${idx + 1})`;
+  };
 
   const parseExcel = useCallback(async (f: File): Promise<ParsedRow[]> => {
     const XLSX = await import("xlsx");
@@ -79,6 +286,7 @@ export function ExcelUpload({ locale }: { locale: string }) {
     let colProduct = 4, colVariant = -1, colQty = 5, colCartons = 6;
     let colTotal = -1, colCustomerType = -1, colBranch = -1;
     let startRow = 0;
+    let layoutInferred = false;
 
     // ── Header detection ──────────────────────────────────────────────
     const firstRow = raw[0];
@@ -111,6 +319,21 @@ export function ExcelUpload({ locale }: { locale: string }) {
       });
     }
 
+    // ── Data starts at row 0: infer Partner name / ID / Product when an extra blank column shifts columns right ──
+    if (startRow === 0) {
+      const inf = inferGroupedInvoiceColumns(raw, 0);
+      if (inf) {
+        layoutInferred = true;
+        colDate = inf.colDate;
+        colSP = inf.colSP;
+        colPartnerName = inf.colPartnerName;
+        colPartnerId = inf.colPartnerId;
+        colProduct = inf.colProduct;
+        if (inf.colVariant >= 0) colVariant = inf.colVariant;
+        colQty = inf.colQty;
+      }
+    }
+
     // ── Auto-detect variant column if not found in header ─────────────
     if (colVariant === -1) {
       const sample = raw.slice(startRow, startRow + 30).filter((r) => r?.length);
@@ -128,18 +351,20 @@ export function ExcelUpload({ locale }: { locale: string }) {
       colCartons = -1; // cartons are inferred from variant text, not a separate column
     }
 
-    // ── Validate product col is text, not numbers ─────────────────────
-    const sp5 = raw.slice(startRow, startRow + 5).filter((r) => r?.length);
-    const ps  = sp5.map((r) => String(r[colProduct] ?? "").trim());
-    if (ps.filter((v) => !isNaN(parseFloat(v)) && v).length > ps.filter((v) => isNaN(parseFloat(v)) && v).length && colProduct > 0) colProduct--;
+    // ── Validate product col is text, not numbers (skip when layout was inferred) ──
+    if (!layoutInferred) {
+      const sp5 = raw.slice(startRow, startRow + 5).filter((r) => r?.length);
+      const ps  = sp5.map((r) => String(r[colProduct] ?? "").trim());
+      if (ps.filter((v) => !isNaN(parseFloat(v)) && v).length > ps.filter((v) => isNaN(parseFloat(v)) && v).length && colProduct > 0) colProduct--;
+    }
 
     // ── Month names for display ───────────────────────────────────────
     const MONTH_NAMES_AR = ["يناير","فبراير","مارس","أبريل","مايو","يونيو","يوليو","أغسطس","سبتمبر","أكتوبر","نوفمبر","ديسمبر"];
     const MONTH_NAMES_EN = ["January","February","March","April","May","June","July","August","September","October","November","December"];
     const monthNames = isRTL ? MONTH_NAMES_AR : MONTH_NAMES_EN;
 
-    // ── Helper: parse date cell → { month, year } ────────────────────
-    const parseDate = (val: any): { month: number; year: number } => {
+    // ── Helper: parse date cell → month, year, and YYYY-MM-DD (matches Odoo / Excel serials) ──
+    const parseDateFull = (val: any): { month: number; year: number; iso: string } => {
       let d: Date | null = null;
       if (val instanceof Date && !isNaN(val.getTime())) {
         d = val;
@@ -152,12 +377,28 @@ export function ExcelUpload({ locale }: { locale: string }) {
           if (dmy) d = new Date(+dmy[3] < 100 ? +dmy[3] + 2000 : +dmy[3], +dmy[2] - 1, +dmy[1]);
           else {
             const num = parseFloat(str);
-            if (!isNaN(num) && num > 40000) d = new Date((num - 25569) * 86400 * 1000);
+            // Excel / LibreOffice serial (Odoo exports use this, e.g. 46112 → 2026-03-31)
+            if (!isNaN(num) && num > 40000) d = new Date(Math.round((num - 25569) * 86400 * 1000));
           }
         }
       }
-      if (!d || isNaN(d.getTime())) return { month: selectedMonth, year: selectedYear };
-      return { month: d.getMonth() + 1, year: d.getFullYear() };
+      if (!d || isNaN(d.getTime())) {
+        const y = selectedYear;
+        const m = selectedMonth;
+        return {
+          month: m,
+          year: y,
+          iso: `${y}-${String(m).padStart(2, "0")}-01`,
+        };
+      }
+      const y = d.getFullYear();
+      const m = d.getMonth() + 1;
+      const day = d.getDate();
+      return {
+        month: m,
+        year: y,
+        iso: `${y}-${String(m).padStart(2, "0")}-${String(day).padStart(2, "0")}`,
+      };
     };
 
     // ── Helper: clean product name "[008087] FILO (4)" → "FILO" ──────
@@ -172,12 +413,13 @@ export function ExcelUpload({ locale }: { locale: string }) {
       return { code: s, name: s };
     };
 
-    // ── Step 1: Forward-fill blank cells (Date, SP, Client, ID) ──────
+    // ── Step 1: Forward-fill blank cells for Date + Salesperson only (Odoo groups lines under one invoice).
+    // Do not fill Partner name/ID — each line is a different client unless the cell is non-empty.
     const fillLast: Record<number, any> = {};
     for (let i = startRow; i < raw.length; i++) {
       const row = raw[i];
       if (!row) continue;
-      for (const col of [colDate, colSP, colPartnerName, colPartnerId]) {
+      for (const col of [colDate, colSP]) {
         const v = row[col];
         const empty = v === null || v === undefined || String(v).trim() === "";
         if (!empty) fillLast[col] = v;
@@ -189,12 +431,15 @@ export function ExcelUpload({ locale }: { locale: string }) {
     // Groups ALL rows for the same product+client in the same MONTH together,
     // so كارتله rows (even from a different day) merge with color rows.
     interface AggEntry {
-      date_str: string; month: number; year: number;
+      date_str: string;
+      invoice_date_iso: string;
+      month: number;
+      year: number;
       salesperson_code: string; salesperson_name: string;
       partner_name: string; partner_id: string; product_name: string;
       quantity: number;       // total meters from color variants
       invoice_total: number;  // sum of invoice amounts
-      customer_type: string;  // client type (استهلاكي / تجاري / جملة / VIP)
+      customer_type: string;  // client type (تجاري / جملة / VIP)
       branch: string;         // branch name
       cartela_qty: number;    // total from explicit كارتله rows
       isValid: boolean; errors: string[];
@@ -206,8 +451,9 @@ export function ExcelUpload({ locale }: { locale: string }) {
       const row = raw[i];
       if (!row || row.every((c: any) => c === null || c === undefined || String(c).trim() === "")) continue;
 
-      const { month, year }  = parseDate(row[colDate]);
-      const dateStr          = `${monthNames[month - 1]} ${year}`;
+      const df                 = parseDateFull(row[colDate]);
+      const { month, year }    = df;
+      const dateStr            = `${monthNames[month - 1]} ${year}`;
       const spRaw            = String(row[colSP] ?? "").trim();
       const { code: spCode, name: spName } = parseSP(spRaw);
       const partnerName      = String(row[colPartnerName] ?? "").trim();
@@ -246,28 +492,37 @@ export function ExcelUpload({ locale }: { locale: string }) {
 
       if (!baseProduct) continue;
 
-      const aggKey = `${month}|${year}|${partnerId}|${baseProduct}`;
+      // Include salesperson so lines on the same invoice for the same client+product+month
+      // (different reps) are not merged into one row / one DB upsert.
+      const spAggKey = (spCode || "").trim() || "__none__";
+      const aggKey = `${month}|${year}|${partnerId}|${baseProduct}|${spAggKey}`;
 
       const errors: string[] = [];
-      if (!spCode)      errors.push(isRTL ? "المندوب مطلوب"    : "Salesperson required");
-      if (!partnerName) errors.push(isRTL ? "اسم العميل مطلوب" : "Client name required");
-      if (!partnerId)   errors.push(isRTL ? "رقم الشريك مطلوب" : "Partner ID required");
+      if (!spCode) errors.push(isRTL ? "المندوب مطلوب" : "Salesperson required");
+      if (!partnerId) errors.push(isRTL ? "رقم الشريك مطلوب" : "Partner ID required");
+
+      const displayPartnerName = partnerName.trim() || partnerId;
 
       if (aggMap.has(aggKey)) {
         const ex = aggMap.get(aggKey)!;
         ex.quantity      += meters;
         ex.cartela_qty   += cartonsCount;
         ex.invoice_total += rowTotal;
+        if (df.iso < ex.invoice_date_iso) ex.invoice_date_iso = df.iso;
         if (!ex.customer_type && rowCustType) ex.customer_type = rowCustType;
         if (!ex.branch && rowBranch)          ex.branch        = rowBranch;
-        if (!ex.salesperson_code && spCode)   { ex.salesperson_code = spCode; ex.salesperson_name = spName; }
+        if (!ex.partner_name && displayPartnerName) ex.partner_name = displayPartnerName;
         // Track this color variant's contribution
         if (meters > 0 && variantName) ex.variants.push({ name: variantName, meters });
       } else {
         aggMap.set(aggKey, {
-          date_str: dateStr, month, year,
+          date_str: dateStr,
+          invoice_date_iso: df.iso,
+          month,
+          year,
           salesperson_code: spCode, salesperson_name: spName,
-          partner_name: partnerName, partner_id: partnerId,
+          partner_name: displayPartnerName,
+          partner_id: partnerId,
           product_name: baseProduct,
           quantity:      meters,
           invoice_total: rowTotal,
@@ -296,7 +551,22 @@ export function ExcelUpload({ locale }: { locale: string }) {
     }
 
     // ── Step 4: Finalize ──────────────────────────────────────────────
+    setDetectedLayout({
+      startRow,
+      inferred: layoutInferred,
+      colDate,
+      colSP,
+      colPartnerName,
+      colPartnerId,
+      colProduct,
+      colVariant,
+      colQty,
+      colCartons,
+      colTotal,
+    });
+
     return Array.from(aggMap.values() as Iterable<AggEntry>).map((entry) => {
+      const { invoice_date_iso, ...aggRest } = entry;
       let cartelaQty        = entry.cartela_qty;
       let cartelaCrossMonth = false;
       let cartelaAssumed    = false;
@@ -319,7 +589,8 @@ export function ExcelUpload({ locale }: { locale: string }) {
       }
 
       return {
-        ...entry,
+        ...aggRest,
+        invoice_date: invoice_date_iso,
         cartela_qty:         cartelaQty,
         cartela_cross_month: cartelaCrossMonth,
         cartela_assumed:     cartelaAssumed,
@@ -363,6 +634,8 @@ export function ExcelUpload({ locale }: { locale: string }) {
       month: number; year: number; salesperson_code: string; salesperson_name: string;
       partner_name: string; partner_id: string; product_name: string; quantity: number;
       invoice_total: number; customer_type: string; branch: string;
+      invoice_date: string;
+      meter_breakdown?: { label: string; meters: number }[];
     };
     const apiRows: ApiRow[] = [];
     for (const row of validRows) {
@@ -373,14 +646,35 @@ export function ExcelUpload({ locale }: { locale: string }) {
       };
       // Meters order — in the product's own month
       if (row.quantity > 0) {
-        apiRows.push({ ...base, month: row.month, year: row.year, product_name: row.product_name, quantity: row.quantity, invoice_total: row.invoice_total });
+        const meter_breakdown =
+          row.variants?.length > 0
+            ? row.variants.map((v) => ({ label: v.name.trim() || "—", meters: v.meters }))
+            : undefined;
+        apiRows.push({
+          ...base,
+          month: row.month,
+          year: row.year,
+          product_name: row.product_name,
+          quantity: row.quantity,
+          invoice_total: row.invoice_total,
+          invoice_date: row.invoice_date,
+          ...(meter_breakdown ? { meter_breakdown } : {}),
+        });
       }
       // كارتله order — only EXPLICIT ones (COLOR: كارتلة rows in the Excel).
       // Assumed kartelahs (cartela_assumed=true) are display-only hints and must NOT
       // be stored in the database, otherwise kartela counts become inflated.
       if (row.cartela_qty > 0 && !row.cartela_cross_month && !row.cartela_assumed) {
         const cartelaMonth = row.cartela_month ?? row.month;
-        apiRows.push({ ...base, month: cartelaMonth, year: row.year, product_name: `${row.product_name} كارتله`, quantity: row.cartela_qty, invoice_total: 0 });
+        apiRows.push({
+          ...base,
+          month: cartelaMonth,
+          year: row.year,
+          product_name: `${row.product_name} كارتله`,
+          quantity: row.cartela_qty,
+          invoice_total: 0,
+          invoice_date: row.invoice_date,
+        });
       }
     }
 
@@ -416,6 +710,7 @@ export function ExcelUpload({ locale }: { locale: string }) {
     setUploadResult(null);
     setProgress(0);
     setErrorMsg("");
+    setDetectedLayout(null);
   };
 
   const validCount   = parsedData.filter((r) => r.isValid).length;
@@ -581,6 +876,36 @@ export function ExcelUpload({ locale }: { locale: string }) {
               </div>
             )}
           </div>
+
+          {detectedLayout && (
+            <div className="rounded-xl border border-blue-200 bg-blue-50/70 dark:bg-blue-950/20 dark:border-blue-900 px-3 py-2 text-xs text-blue-800 dark:text-blue-300">
+              <div className="font-semibold mb-1">
+                {isRTL ? "الأعمدة المكتشفة تلقائياً" : "Auto-detected columns"}
+                {detectedLayout.inferred ? ` (${isRTL ? "تخطيط مستنتج" : "inferred layout"})` : ""}
+              </div>
+              <div className="leading-5">
+                {isRTL ? "بداية البيانات" : "Data starts"}: {detectedLayout.startRow + 1}
+                {" · "}
+                {isRTL ? "التاريخ" : "Date"}: {colLabel(detectedLayout.colDate)}
+                {" · "}
+                {isRTL ? "المندوب" : "Salesperson"}: {colLabel(detectedLayout.colSP)}
+                {" · "}
+                {isRTL ? "اسم العميل" : "Partner name"}: {colLabel(detectedLayout.colPartnerName)}
+                {" · "}
+                {isRTL ? "رقم الشريك" : "Partner ID"}: {colLabel(detectedLayout.colPartnerId)}
+                {" · "}
+                {isRTL ? "المنتج" : "Product"}: {colLabel(detectedLayout.colProduct)}
+                {" · "}
+                {isRTL ? "الكمية" : "Qty"}: {colLabel(detectedLayout.colQty)}
+                {" · "}
+                {isRTL ? "الصفة/اللون" : "Variant"}: {colLabel(detectedLayout.colVariant)}
+                {" · "}
+                {isRTL ? "الكارتيلا" : "Cartons"}: {colLabel(detectedLayout.colCartons)}
+                {" · "}
+                {isRTL ? "الإجمالي" : "Total"}: {colLabel(detectedLayout.colTotal)}
+              </div>
+            </div>
+          )}
 
           {errorMsg && (
             <div className="flex items-center gap-2 p-3 rounded-xl bg-red-50 border border-red-200 text-red-700 text-sm">

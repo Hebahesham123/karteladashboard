@@ -20,9 +20,11 @@ import { cn } from "@/lib/utils";
 interface FilterBarProps {
   locale: string;
   showSalesperson?: boolean;
+  showClient?: boolean;
   showStatus?: boolean;
   showLevel?: boolean;
   showProduct?: boolean;
+  multiSelectDropdowns?: boolean;
   /** Extra controls shown only in the mobile filter dialog (e.g. clients product + type) */
   mobileDrawerExtra?: React.ReactNode;
 }
@@ -33,15 +35,20 @@ const MONTHS_EN = ["January", "February", "March", "April", "May", "June", "July
 export function FilterBar({
   locale,
   showSalesperson = true,
+  showClient = false,
   showStatus = false,
   showLevel = false,
   showProduct = false,
+  multiSelectDropdowns = false,
   mobileDrawerExtra,
 }: FilterBarProps) {
   const { filters, setFilter } = useStore();
   const [salespersons, setSalespersons] = useState<{ id: string; name: string }[]>([]);
+  const [clients, setClients] = useState<{ id: string; name: string; partner_id: string }[]>([]);
   const [products, setProducts] = useState<{ id: string; name: string }[]>([]);
   const [spOpen, setSpOpen] = useState(false);
+  const [clientOpen, setClientOpen] = useState(false);
+  const [productOpen, setProductOpen] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
   const isRTL = locale === "ar";
 
@@ -75,9 +82,16 @@ export function FilterBar({
           .order("name");
         setProducts(data || []);
       }
+      if (showClient) {
+        const { data } = await supabase
+          .from("clients")
+          .select("id, name, partner_id")
+          .order("name");
+        setClients(data || []);
+      }
     };
     fetchOptions();
-  }, [showSalesperson, showProduct]);
+  }, [showSalesperson, showProduct, showClient]);
 
   const statuses = [
     { value: "NEW", label: isRTL ? "جديد" : "New" },
@@ -97,18 +111,29 @@ export function FilterBar({
 
   const handleReset = () => {
     setFilter("selectedSalesperson", null);
+    setFilter("selectedSalespersons", []);
+    setFilter("selectedClient", null);
+    setFilter("selectedClients", []);
     setFilter("selectedStatus", null);
     setFilter("selectedLevel", null);
     setFilter("selectedProduct", null);
+    setFilter("selectedProducts", []);
     setFilter("selectedMonth", currentMonthNum);
     setFilter("selectedYear", currentYear);
   };
+  const selectedSalespersons = filters.selectedSalespersons ?? [];
+  const selectedClients = filters.selectedClients ?? [];
+  const selectedProducts = filters.selectedProducts ?? [];
 
   const hasActiveFilters =
     filters.selectedSalesperson !== null ||
+    selectedSalespersons.length > 0 ||
+    filters.selectedClient !== null ||
+    selectedClients.length > 0 ||
     filters.selectedStatus !== null ||
     filters.selectedLevel !== null ||
     filters.selectedProduct !== null ||
+    selectedProducts.length > 0 ||
     filters.selectedMonth !== currentMonthNum ||
     filters.selectedYear !== currentYear;
 
@@ -116,8 +141,20 @@ export function FilterBar({
   const yearDisplayValue = (filters.selectedYear ?? currentYear).toString();
 
   const activeCount =
-    [filters.selectedSalesperson, filters.selectedStatus, filters.selectedLevel, filters.selectedProduct].filter(Boolean).length +
+    [
+      filters.selectedSalesperson,
+      ...selectedSalespersons,
+      filters.selectedClient,
+      ...selectedClients,
+      filters.selectedStatus,
+      filters.selectedLevel,
+      filters.selectedProduct,
+      ...selectedProducts,
+    ].filter(Boolean).length +
     (filters.selectedMonth !== currentMonthNum || filters.selectedYear !== currentYear ? 1 : 0);
+
+  const toggleId = (current: string[], id: string) =>
+    current.includes(id) ? current.filter((x) => x !== id) : [...current, id];
 
   const triggerSm = "h-7 text-[10px] px-2 md:h-8 md:text-xs";
   const triggerMd = "w-36 h-8 text-xs";
@@ -168,14 +205,18 @@ export function FilterBar({
               className={stack ? triggerWFull : cn("w-44 md:w-52", triggerSm)}
             >
               <span className="truncate">
-                {filters.selectedSalesperson
-                  ? salespersons.find((sp) => sp.id === filters.selectedSalesperson)?.name
-                  : isRTL ? "كل المندوبين" : "All Salespersons"}
+                {multiSelectDropdowns
+                  ? (selectedSalespersons.length > 0
+                      ? `${selectedSalespersons.length} ${isRTL ? "مختار" : "selected"}`
+                      : isRTL ? "كل المندوبين" : "All Salespersons")
+                  : (filters.selectedSalesperson
+                      ? salespersons.find((sp) => sp.id === filters.selectedSalesperson)?.name
+                      : isRTL ? "كل المندوبين" : "All Salespersons")}
               </span>
               <ChevronsUpDown className="h-3.5 w-3.5 shrink-0 opacity-50 ms-1" />
             </Button>
           </PopoverTrigger>
-          <PopoverContent className="w-[min(100vw-2rem,20rem)] p-0" align="start">
+          <PopoverContent className="w-[min(100vw-2rem,22rem)] p-0" align="start">
             <Command>
               <CommandInput placeholder={isRTL ? "ابحث عن مندوب..." : "Search salesperson..."} className="text-xs h-8" />
               <CommandList>
@@ -186,12 +227,19 @@ export function FilterBar({
                   <CommandItem
                     value="all"
                     onSelect={() => {
-                      setFilter("selectedSalesperson", null);
-                      setSpOpen(false);
+                      if (multiSelectDropdowns) setFilter("selectedSalespersons", []);
+                      else {
+                        setFilter("selectedSalesperson", null);
+                        setSpOpen(false);
+                      }
                     }}
                     className="text-xs"
                   >
-                    <Check className={`h-3.5 w-3.5 mr-2 ${!filters.selectedSalesperson ? "opacity-100" : "opacity-0"}`} />
+                    <Check className={`h-3.5 w-3.5 mr-2 ${
+                      multiSelectDropdowns
+                        ? (selectedSalespersons.length === 0 ? "opacity-100" : "opacity-0")
+                        : (!filters.selectedSalesperson ? "opacity-100" : "opacity-0")
+                    }`} />
                     {isRTL ? "كل المندوبين" : "All Salespersons"}
                   </CommandItem>
                   {salespersons.map((sp) => (
@@ -199,12 +247,19 @@ export function FilterBar({
                       key={sp.id}
                       value={sp.name}
                       onSelect={() => {
-                        setFilter("selectedSalesperson", filters.selectedSalesperson === sp.id ? null : sp.id);
-                        setSpOpen(false);
+                        if (multiSelectDropdowns) setFilter("selectedSalespersons", toggleId(selectedSalespersons, sp.id));
+                        else {
+                          setFilter("selectedSalesperson", filters.selectedSalesperson === sp.id ? null : sp.id);
+                          setSpOpen(false);
+                        }
                       }}
                       className="text-xs"
                     >
-                      <Check className={`h-3.5 w-3.5 mr-2 shrink-0 ${filters.selectedSalesperson === sp.id ? "opacity-100" : "opacity-0"}`} />
+                      <Check className={`h-3.5 w-3.5 mr-2 shrink-0 ${
+                        multiSelectDropdowns
+                          ? (selectedSalespersons.includes(sp.id) ? "opacity-100" : "opacity-0")
+                          : (filters.selectedSalesperson === sp.id ? "opacity-100" : "opacity-0")
+                      }`} />
                       <span className="truncate">{sp.name}</span>
                     </CommandItem>
                   ))}
@@ -248,19 +303,109 @@ export function FilterBar({
       )}
 
       {showProduct && products.length > 0 && (
-        <Select value={filters.selectedProduct || "all"} onValueChange={(v) => setFilter("selectedProduct", v === "all" ? null : v)}>
-          <SelectTrigger className={stack ? triggerWFull : triggerMd}>
-            <SelectValue placeholder={isRTL ? "المنتج" : "Product"} />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">{isRTL ? "كل المنتجات" : "All Products"}</SelectItem>
-            {products.map((p) => (
-              <SelectItem key={p.id} value={p.id}>
-                {p.name}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+        multiSelectDropdowns ? (
+          <Popover open={productOpen} onOpenChange={setProductOpen}>
+            <PopoverTrigger asChild>
+              <Button variant="outline" role="combobox" aria-expanded={productOpen} className={stack ? triggerWFull : triggerMd}>
+                <span className="truncate">
+                  {selectedProducts.length > 0
+                    ? `${selectedProducts.length} ${isRTL ? "مختار" : "selected"}`
+                    : isRTL ? "كل المنتجات" : "All Products"}
+                </span>
+                <ChevronsUpDown className="h-3.5 w-3.5 shrink-0 opacity-50 ms-1" />
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent className="w-[min(100vw-2rem,24rem)] p-0" align="start">
+              <Command>
+                <CommandInput placeholder={isRTL ? "ابحث عن منتج..." : "Search product..."} className="text-xs h-8" />
+                <CommandList>
+                  <CommandEmpty className="text-xs py-3 text-center text-muted-foreground">
+                    {isRTL ? "لا توجد نتائج" : "No results found"}
+                  </CommandEmpty>
+                  <CommandGroup>
+                    <CommandItem value="all" onSelect={() => setFilter("selectedProducts", [])} className="text-xs">
+                      <Check className={`h-3.5 w-3.5 mr-2 ${selectedProducts.length === 0 ? "opacity-100" : "opacity-0"}`} />
+                      {isRTL ? "كل المنتجات" : "All Products"}
+                    </CommandItem>
+                    {products.map((p) => (
+                      <CommandItem key={p.id} value={p.name} onSelect={() => setFilter("selectedProducts", toggleId(selectedProducts, p.id))} className="text-xs">
+                        <Check className={`h-3.5 w-3.5 mr-2 shrink-0 ${selectedProducts.includes(p.id) ? "opacity-100" : "opacity-0"}`} />
+                        <span className="truncate">{p.name}</span>
+                      </CommandItem>
+                    ))}
+                  </CommandGroup>
+                </CommandList>
+              </Command>
+            </PopoverContent>
+          </Popover>
+        ) : (
+          <Select value={filters.selectedProduct || "all"} onValueChange={(v) => setFilter("selectedProduct", v === "all" ? null : v)}>
+            <SelectTrigger className={stack ? triggerWFull : triggerMd}>
+              <SelectValue placeholder={isRTL ? "المنتج" : "Product"} />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">{isRTL ? "كل المنتجات" : "All Products"}</SelectItem>
+              {products.map((p) => (
+                <SelectItem key={p.id} value={p.id}>
+                  {p.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        )
+      )}
+
+      {showClient && clients.length > 0 && (
+        multiSelectDropdowns ? (
+          <Popover open={clientOpen} onOpenChange={setClientOpen}>
+            <PopoverTrigger asChild>
+              <Button variant="outline" role="combobox" aria-expanded={clientOpen} className={stack ? triggerWFull : cn("w-44 md:w-52", triggerSm)}>
+                <span className="truncate">
+                  {selectedClients.length > 0
+                    ? `${selectedClients.length} ${isRTL ? "مختار" : "selected"}`
+                    : isRTL ? "كل العملاء" : "All Clients"}
+                </span>
+                <ChevronsUpDown className="h-3.5 w-3.5 shrink-0 opacity-50 ms-1" />
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent className="w-[min(100vw-2rem,24rem)] p-0" align="start">
+              <Command>
+                <CommandInput placeholder={isRTL ? "ابحث عن عميل..." : "Search client..."} className="text-xs h-8" />
+                <CommandList>
+                  <CommandEmpty className="text-xs py-3 text-center text-muted-foreground">
+                    {isRTL ? "لا توجد نتائج" : "No results found"}
+                  </CommandEmpty>
+                  <CommandGroup>
+                    <CommandItem value="all" onSelect={() => setFilter("selectedClients", [])} className="text-xs">
+                      <Check className={`h-3.5 w-3.5 mr-2 ${selectedClients.length === 0 ? "opacity-100" : "opacity-0"}`} />
+                      {isRTL ? "كل العملاء" : "All Clients"}
+                    </CommandItem>
+                    {clients.map((c) => (
+                      <CommandItem key={c.id} value={`${c.name} ${c.partner_id}`} onSelect={() => setFilter("selectedClients", toggleId(selectedClients, c.id))} className="text-xs">
+                        <Check className={`h-3.5 w-3.5 mr-2 shrink-0 ${selectedClients.includes(c.id) ? "opacity-100" : "opacity-0"}`} />
+                        <span className="truncate">{c.name} ({c.partner_id})</span>
+                      </CommandItem>
+                    ))}
+                  </CommandGroup>
+                </CommandList>
+              </Command>
+            </PopoverContent>
+          </Popover>
+        ) : (
+          <Select value={filters.selectedClient || "all"} onValueChange={(v) => setFilter("selectedClient", v === "all" ? null : v)}>
+            <SelectTrigger className={stack ? triggerWFull : cn("w-44 md:w-52", triggerSm)}>
+              <SelectValue placeholder={isRTL ? "العميل" : "Client"} />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">{isRTL ? "كل العملاء" : "All Clients"}</SelectItem>
+              {clients.map((c) => (
+                <SelectItem key={c.id} value={c.id}>
+                  {c.name} ({c.partner_id})
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        )
       )}
 
       {hasActiveFilters && (

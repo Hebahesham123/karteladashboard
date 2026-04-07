@@ -7,6 +7,7 @@ import { UserManagement } from "@/components/admin/UserManagement";
 import { ActivityLogTable } from "@/components/admin/ActivityLogTable";
 import { SalesAccountsManager } from "@/components/admin/SalesAccountsManager";
 import { useStore } from "@/store/useStore";
+import { PageBack } from "@/components/layout/PageBack";
 import { Upload, Users, Activity, ShieldAlert, UserCog } from "lucide-react";
 import { useRouter } from "next/navigation";
 
@@ -43,6 +44,7 @@ export default function AdminPage() {
 
   return (
     <div className="space-y-6">
+      <PageBack locale={locale} fallbackHref="/dashboard" />
       <div>
         <h1 className="text-2xl font-bold">{t.title}</h1>
         <p className="text-muted-foreground text-sm mt-1">{t.subtitle}</p>

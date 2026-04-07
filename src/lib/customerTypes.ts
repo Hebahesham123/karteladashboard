@@ -1,5 +1,5 @@
 /** Customer types shown in filters and included in metrics (all others excluded). */
-export const ALLOWED_CUSTOMER_TYPES = ["VIP", "استهلاكي", "تجاري", "جملة"] as const;
+export const ALLOWED_CUSTOMER_TYPES = ["VIP", "تجاري", "جملة"] as const;
 
 export type AllowedCustomerType = (typeof ALLOWED_CUSTOMER_TYPES)[number];
 

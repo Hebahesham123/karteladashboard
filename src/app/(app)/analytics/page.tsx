@@ -17,6 +17,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { FilterBar } from "@/components/shared/FilterBar";
+import { PageBack } from "@/components/layout/PageBack";
 import { createClient } from "@/lib/supabase/client";
 import { useStore } from "@/store/useStore";
 import { formatNumber, calculateGrowthRate, isExcludedFromSalesLeaderboard } from "@/lib/utils";
@@ -248,6 +249,7 @@ export default function AnalyticsPage() {
 
   return (
     <div className="space-y-6">
+      <PageBack locale={locale} fallbackHref="/dashboard" />
       <div>
         <h1 className="text-2xl font-bold">{t.title}</h1>
         <p className="text-muted-foreground text-sm mt-0.5">{t.subtitle}</p>

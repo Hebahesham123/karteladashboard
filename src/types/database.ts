@@ -83,9 +83,15 @@ export interface Database {
           quantity: number;
           order_level: OrderLevel;
           upload_batch_id: string | null;
+          invoice_date: string | null;
+          /** JSON [{ label, meters }] from Excel color/variant lines */
+          meter_breakdown: { label: string; meters: number }[] | null;
           created_at: string;
         };
-        Insert: Omit<Database["public"]["Tables"]["orders"]["Row"], "id" | "order_level" | "created_at">;
+        Insert: Omit<
+          Database["public"]["Tables"]["orders"]["Row"],
+          "id" | "order_level" | "created_at" | "meter_breakdown"
+        > & { meter_breakdown?: Database["public"]["Tables"]["orders"]["Row"]["meter_breakdown"] };
         Update: Partial<Database["public"]["Tables"]["orders"]["Insert"]>;
       };
       upload_batches: {

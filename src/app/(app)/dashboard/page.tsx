@@ -29,6 +29,7 @@ import {
   cn,
 } from "@/lib/utils";
 import { dataCache } from "@/lib/dataCache";
+import { PageBack } from "@/components/layout/PageBack";
 import {
   ALLOWED_CUSTOMER_TYPES,
   allowedCustomerTypesList,
@@ -160,7 +161,7 @@ export default function DashboardPage() {
   const [salespersons, setSalespersons] = useState<{ id: string; name: string }[]>([]);
   const dashYears = Array.from({ length: 3 }, (_, i) => now.getFullYear() - i);
 
-  // Load salesperson + product lists once (customer types are fixed: VIP / استهلاكي / تجاري / جملة)
+  // Load salesperson + product lists once (customer types: VIP / تجاري / جملة)
   useEffect(() => {
     const supabase = createClient();
     supabase.from("salespersons").select("id, name").eq("is_active", true).order("name")
@@ -917,6 +918,7 @@ export default function DashboardPage() {
 
   return (
     <div className="space-y-3 md:space-y-5">
+      <PageBack locale={locale} fallbackHref="/dashboard" />
       {/* Header */}
       <div className="flex items-center justify-between gap-2 md:gap-4 flex-wrap">
         <div className="min-w-0">

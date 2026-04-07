@@ -11,21 +11,25 @@ import {
   LogOut,
   ChevronLeft,
   ChevronRight,
+  Layers,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 interface NavItem {
-  label: string;
   href: string;
   icon: React.ComponentType<{ className?: string }>;
   role?: "admin" | "sales" | "all";
+  labelEn: string;
+  labelAr: string;
 }
 
 const navItems: NavItem[] = [
-  { label: "Dashboard", href: "/dashboard", icon: LayoutDashboard, role: "admin" },
-  { label: "My Clients", href: "/sales", icon: TrendingUp, role: "sales" },
-  { label: "Clients", href: "/clients", icon: Users, role: "admin" },
-  { label: "Admin", href: "/admin", icon: Settings, role: "admin" },
+  { labelEn: "Dashboard", labelAr: "لوحة التحكم", href: "/dashboard", icon: LayoutDashboard, role: "admin" },
+  { labelEn: "Kartela analysis", labelAr: "تحليل الكارتيلا", href: "/kartela-analysis", icon: Layers, role: "admin" },
+  { labelEn: "My Clients", labelAr: "عملائي", href: "/sales", icon: TrendingUp, role: "sales" },
+  { labelEn: "Kartela analysis", labelAr: "تحليل الكارتيلا", href: "/kartela-analysis", icon: Layers, role: "sales" },
+  { labelEn: "Clients", labelAr: "العملاء", href: "/clients", icon: Users, role: "admin" },
+  { labelEn: "Admin", labelAr: "الإدارة", href: "/admin", icon: Settings, role: "admin" },
 ];
 
 interface SidebarProps {
@@ -98,8 +102,9 @@ export function Sidebar({ role, isCollapsed, onToggle, onSignOut, locale, onNavi
         <ul className="space-y-0.5 md:space-y-1">
           {filteredItems.map((item) => {
             const isActive = pathname.startsWith(item.href);
+            const label = isRTL ? item.labelAr : item.labelEn;
             return (
-              <li key={item.href}>
+              <li key={`${item.role}-${item.href}`}>
                 <Link
                   href={item.href}
                   onClick={() => onNavigate?.()}
@@ -110,12 +115,12 @@ export function Sidebar({ role, isCollapsed, onToggle, onSignOut, locale, onNavi
                       : "text-muted-foreground hover:bg-accent hover:text-foreground",
                     isCollapsed && "justify-center"
                   )}
-                  title={isCollapsed ? item.label : undefined}
+                  title={isCollapsed ? label : undefined}
                 >
                   <item.icon className="h-5 w-5 shrink-0" />
                   {!isCollapsed && (
                     <motion.span initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="truncate">
-                      {item.label}
+                      {label}
                     </motion.span>
                   )}
                 </Link>

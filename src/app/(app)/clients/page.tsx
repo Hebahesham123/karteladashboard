@@ -25,7 +25,6 @@ import {
   Download,
   RefreshCw,
   MessageSquarePlus,
-  Edit3,
   History,
   MessageSquare,
   StickyNote,
@@ -38,11 +37,12 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { Check } from "lucide-react";
 import { FilterBar } from "@/components/shared/FilterBar";
-import { UpdateStatusDialog } from "@/components/clients/UpdateStatusDialog";
+import { ClientStatusSelect } from "@/components/clients/ClientStatusSelect";
+import { PageBack } from "@/components/layout/PageBack";
 import { AddNoteDialog } from "@/components/clients/AddNoteDialog";
 import { createClient } from "@/lib/supabase/client";
 import { useStore } from "@/store/useStore";
-import { getLevelBadgeColor, getStatusColor, formatNumber, cn } from "@/lib/utils";
+import { getLevelBadgeColor, formatNumber, cn } from "@/lib/utils";
 import { ALLOWED_CUSTOMER_TYPES, allowedCustomerTypesList } from "@/lib/customerTypes";
 import { dataCache } from "@/lib/dataCache";
 import type { ClientStatus, OrderLevel } from "@/types/database";
@@ -91,7 +91,7 @@ export default function ClientsPage() {
     return cf;
   });
   const [selectedClient, setSelectedClient] = useState<ClientRow | null>(null);
-  const [dialogType, setDialogType] = useState<"status" | "note" | "history" | null>(null);
+  const [dialogType, setDialogType] = useState<"note" | "history" | null>(null);
   const didApplyUrlParams = useRef(false);
 
   // Apply URL search params once on first load
@@ -624,16 +624,27 @@ export default function ClientsPage() {
     {
       accessorKey: "current_status",
       header: t.status,
-      cell: ({ getValue }) => {
-        const status = getValue() as ClientStatus;
-        return (
-          <span
-            className={`inline-flex px-2.5 py-1 rounded-full text-xs font-medium border ${getStatusColor(status)}`}
-          >
-            {statusLabels[status]}
-          </span>
-        );
-      },
+      cell: ({ row }) => (
+        <ClientStatusSelect
+          clientId={row.original.id}
+          clientName={row.original.name}
+          currentStatus={row.original.current_status}
+          locale={locale}
+          onUpdated={(newStatus) => {
+            setClients((prev) =>
+              prev.map((c) => (c.id === row.original.id ? { ...c, current_status: newStatus } : c))
+            );
+            setLogCache((p) => {
+              const n = { ...p };
+              delete n[row.original.id];
+              return n;
+            });
+            setExpanded((p) => ({ ...p, [row.original.id]: true }));
+            invalidateClientCache();
+            fetchClients(true);
+          }}
+        />
+      ),
     },
     // ── Actions ───────────────────────────────────────────────────────
     {
@@ -641,14 +652,6 @@ export default function ClientsPage() {
       header: t.actions,
       cell: ({ row }) => (
         <div className="flex items-center gap-1">
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => { setSelectedClient(row.original); setDialogType("status"); }}
-            className="h-7 px-2 text-xs"
-          >
-            <Edit3 className="h-3.5 w-3.5" />
-          </Button>
           <Button
             variant="ghost"
             size="sm"
@@ -926,6 +929,7 @@ export default function ClientsPage() {
 
   return (
     <div className="space-y-3 md:space-y-6">
+      <PageBack locale={locale} fallbackHref="/dashboard" />
       {/* Header */}
       <div className="flex items-start justify-between gap-2 md:gap-4 flex-wrap">
         <div className="min-w-0">
@@ -1337,26 +1341,6 @@ export default function ClientsPage() {
       </Card>
 
       {/* Dialogs */}
-      {selectedClient && dialogType === "status" && (
-        <UpdateStatusDialog
-          client={selectedClient}
-          locale={locale}
-          onClose={() => { setSelectedClient(null); setDialogType(null); }}
-          onSuccess={(newStatus?: string) => {
-            // Optimistically update the row immediately
-            if (newStatus) {
-              setClients((prev) => prev.map((c) =>
-                c.id === selectedClient.id ? { ...c, current_status: newStatus as ClientStatus } : c
-              ));
-            }
-            invalidateClientCache();
-            setLogCache((p) => { const n = {...p}; delete n[selectedClient.id]; return n; });
-            setExpanded((p) => ({ ...p, [selectedClient.id]: true }));
-            fetchClients(true);
-            setSelectedClient(null); setDialogType(null);
-          }}
-        />
-      )}
       {selectedClient && dialogType === "note" && (
         <AddNoteDialog
           client={selectedClient}
