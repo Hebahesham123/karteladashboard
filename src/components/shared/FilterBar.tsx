@@ -54,8 +54,8 @@ export function FilterBar({
 
   const months = isRTL ? MONTHS_AR : MONTHS_EN;
   const now = new Date();
-  const currentMonthNum = now.getMonth() + 1;
-  const currentYear = now.getFullYear();
+  const currentMonthNum = now.getMonth() === 0 ? 12 : now.getMonth();
+  const currentYear = now.getMonth() === 0 ? now.getFullYear() - 1 : now.getFullYear();
   const years = Array.from({ length: 5 }, (_, i) => currentYear - i);
 
   useEffect(() => {

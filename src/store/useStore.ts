@@ -42,11 +42,13 @@ interface AppState {
   setIsLoading: (_: boolean) => void;
 }
 
-// Default to current month + year so pages load with real data immediately
+// Default to previous month (complete data period)
 const now = new Date();
+const defaultMonth = now.getMonth() === 0 ? 12 : now.getMonth();
+const defaultYear = now.getMonth() === 0 ? now.getFullYear() - 1 : now.getFullYear();
 const defaultFilters: FilterState = {
-  selectedMonth: now.getMonth() + 1,     // 1–12, current month
-  selectedYear:  now.getFullYear(),       // current year
+  selectedMonth: defaultMonth,
+  selectedYear:  defaultYear,
   selectedSalesperson: null,
   selectedSalespersons: [],
   selectedClient: null,
@@ -79,10 +81,10 @@ export const useStore = create<AppState>()(
         set((state) => {
           // Never allow selectedMonth or selectedYear to become null
           if (key === "selectedMonth" && (value === null || value === undefined)) {
-            return { filters: { ...state.filters, selectedMonth: now.getMonth() + 1 } };
+            return { filters: { ...state.filters, selectedMonth: defaultMonth } };
           }
           if (key === "selectedYear" && (value === null || value === undefined)) {
-            return { filters: { ...state.filters, selectedYear: now.getFullYear() } };
+            return { filters: { ...state.filters, selectedYear: defaultYear } };
           }
           return { filters: { ...state.filters, [key]: value } };
         }),

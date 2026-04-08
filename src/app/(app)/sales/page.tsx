@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
+import { useRouter } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   ChevronUp, ChevronDown, ChevronsUpDown,
@@ -82,6 +83,7 @@ function timeAgo(iso: string, isRTL: boolean): string {
 }
 
 export default function SalesPage() {
+  const router = useRouter();
   const { locale, filters, salespersonId, currentUser } = useStore();
   const isRTL = locale === "ar";
 
@@ -439,6 +441,9 @@ export default function SalesPage() {
   const totalMeters  = clients.reduce((s, c) => s + c.total_meters, 0);
   const totalRevenue = clients.reduce((s, c) => s + c.total_revenue, 0);
   const activeCount  = clients.filter(c => c.total_meters > 0).length;
+  const kartelaTotal = clients.reduce((s, c) => s + c.cartela_count, 0);
+  const kartelaClients = clients.filter((c) => c.cartela_count > 0).length;
+  const uniqueProducts = new Set(clients.map((c) => c.top_product_name).filter(Boolean)).size;
 
   const [fixingLink, setFixingLink] = useState(false);
   const [fixError, setFixError]     = useState("");
@@ -510,7 +515,18 @@ export default function SalesPage() {
 
       {/* Quick stats */}
       {!loading && clients.length > 0 && (
-        <div className="grid grid-cols-3 gap-3">
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+          <button
+            type="button"
+            onClick={() => router.push("/kartela-analysis")}
+            className="rounded-xl border border-cyan-300/40 bg-cyan-500/5 hover:bg-cyan-500/10 p-3 text-start transition-colors"
+          >
+            <p className="text-xs text-cyan-500 font-semibold mb-1">{isRTL ? "تحليل الكارتيلا (مندوبي فقط)" : "Kartela analysis (my data only)"}</p>
+            <p className="text-[11px] text-muted-foreground">{isRTL ? "كارتيلا" : "Kartela"}: <span className="font-bold text-foreground">{formatNumber(kartelaTotal)}</span></p>
+            <p className="text-[11px] text-muted-foreground">{isRTL ? "عملاء" : "Clients"}: <span className="font-bold text-foreground">{kartelaClients.toLocaleString()}</span></p>
+            <p className="text-[11px] text-muted-foreground">{isRTL ? "أمتار" : "Meters"}: <span className="font-bold text-foreground">{formatNumber(Math.round(totalMeters))}m</span></p>
+            <p className="text-[11px] text-muted-foreground">{isRTL ? "منتجات" : "Products"}: <span className="font-bold text-foreground">{uniqueProducts.toLocaleString()}</span></p>
+          </button>
           <div className="rounded-xl border border-border bg-card p-3 text-center">
             <p className="text-xs text-muted-foreground mb-0.5">{isRTL ? "عملاء نشطون" : "Active Clients"}</p>
             <p className="text-xl font-bold">{activeCount.toLocaleString()}</p>

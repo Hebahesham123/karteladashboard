@@ -5,8 +5,7 @@ import { useRouter } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   AreaChart, Area, PieChart, Pie, Cell,
-  XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
-  BarChart, Bar, Legend, LabelList,
+  Tooltip, ResponsiveContainer,
 } from "recharts";
 import {
   Users, TrendingUp, TrendingDown, AlertTriangle, CheckCircle,
@@ -113,6 +112,8 @@ export default function DashboardPage() {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [orderCount, setOrderCount] = useState(0);
   const [totalRevenue, setTotalRevenue] = useState(0);
+  const [kartelaTotal, setKartelaTotal] = useState(0);
+  const [kartelaClients, setKartelaClients] = useState(0);
   const [prevMeters, setPrevMeters] = useState(0);
   const [prevRevenue, setPrevRevenue] = useState(0);
   const [prevOrderCount, setPrevOrderCount] = useState(0);
@@ -226,7 +227,7 @@ export default function DashboardPage() {
       totalM: number; greenC: number; orangeC: number; redC: number; activeC: number;
       monthlyC: number; prevM: number; prevR?: number; prevO?: number; prevMc?: number;
       prevLg?: number; prevLo?: number; prevLr?: number; prevDorm?: number;
-      trend: any[]; totalClients: number; orderCount?: number; totalRevenue?: number;
+      trend: any[]; totalClients: number; orderCount?: number; totalRevenue?: number; kartelaQty?: number; kartelaClients?: number;
     }>(cacheKey);
     if (globalCached && !forceRefresh) {
       setTotalMetersValue(globalCached.totalM);
@@ -247,6 +248,8 @@ export default function DashboardPage() {
       setMonthlyTrend(globalCached.trend);
       if (globalCached.orderCount !== undefined) setOrderCount(globalCached.orderCount);
       if (globalCached.totalRevenue !== undefined) setTotalRevenue(globalCached.totalRevenue);
+      setKartelaTotal(globalCached.kartelaQty ?? 0);
+      setKartelaClients(globalCached.kartelaClients ?? 0);
       setLoading(false);
       setHasLoadedOnce(true);
       return;
@@ -326,7 +329,7 @@ export default function DashboardPage() {
         orderCountRes,
       ] = await Promise.all([
         // KPI rows from client_monthly_metrics
-        safePages("client_monthly_metrics", "client_id, total_meters, total_revenue, order_count, level, month, year, customer_type", kpiQuery),
+        safePages("client_monthly_metrics", "client_id, total_meters, total_revenue, order_count, cartela_count, level, month, year, customer_type", kpiQuery),
         // Total client count (head only — no rows transferred)
         (() => {
           let q = supabase.from("clients").select("id", { count: "exact", head: true }).in("customer_type", custTypesForFilter);
@@ -369,7 +372,7 @@ export default function DashboardPage() {
         })();
         const latest = latestQ.data?.[0];
         if (latest?.month && latest?.year) {
-          kpiRows = await safePages("client_monthly_metrics", "client_id, total_meters, total_revenue, order_count, level, month, year, customer_type", (q) => {
+          kpiRows = await safePages("client_monthly_metrics", "client_id, total_meters, total_revenue, order_count, cartela_count, level, month, year, customer_type", (q) => {
             let qq = q.eq("year", Number(latest.year)).eq("month", Number(latest.month));
             if (spFilter) qq = qq.eq("salesperson_id", spFilter);
             qq = qq.in("customer_type", custTypesForFilter);
@@ -382,6 +385,13 @@ export default function DashboardPage() {
 
       // ── 4. Summarize — compute totals and level sub-metrics ───────────────
       const { totalM, greenC, orangeC, activeC, clientCount } = summarize(kpiRows);
+      const kartelaQty = Math.round(kpiRows.reduce((s: number, r: any) => s + (Number(r.cartela_count) || 0), 0));
+      const kartelaClientSet = new Set<string>();
+      kpiRows.forEach((r: any) => {
+        if ((Number(r.cartela_count) || 0) > 0 && r.client_id) kartelaClientSet.add(String(r.client_id));
+      });
+      setKartelaTotal(kartelaQty);
+      setKartelaClients(kartelaClientSet.size);
 
       // Aggregate total revenue
       const totalRev = kpiRows.reduce((s: number, r: any) => s + (Number(r.total_revenue) || 0), 0);
@@ -551,6 +561,8 @@ export default function DashboardPage() {
         monthlyC: consistentMonthly, prevM, prevR, prevO, prevMc, prevLg, prevLo, prevLr, prevDorm, trend, totalClients: denominatorCount,
         orderCount: orderCountFinal,
         totalRevenue: Math.round(totalRev),
+        kartelaQty,
+        kartelaClients: kartelaClientSet.size,
       });
 
     } catch (err) {
@@ -1194,8 +1206,29 @@ export default function DashboardPage() {
         </div>
       )}
 
-      {/* ── 4 Main KPI Summary Cards (Revenue → Meters → Clients → Orders) ── */}
+      {/* ── 4 Main KPI Summary Cards ── */}
       <div className="grid grid-cols-2 xl:grid-cols-4 gap-2 md:gap-3">
+        {/* Kartela + clients + meters (first card) */}
+        <button
+          type="button"
+          onClick={() => router.push("/kartela-analysis")}
+          className="rounded-xl md:rounded-2xl border border-cyan-200 dark:border-cyan-800 bg-gradient-to-br from-cyan-50 to-cyan-100/50 dark:from-cyan-950/30 dark:to-cyan-900/10 p-2.5 md:p-4 text-start hover:shadow-md transition-all group min-w-0"
+        >
+          <div className="flex items-start justify-between gap-1 mb-1 md:mb-2">
+            <span className="text-[10px] md:text-xs font-semibold text-cyan-600 dark:text-cyan-400 leading-tight line-clamp-2">
+              {isRTL ? "الكارتيلا + العملاء + الأمتار" : "Kartela + clients + meters"}
+            </span>
+            <div className="h-6 w-6 md:h-8 md:w-8 rounded-lg md:rounded-xl bg-cyan-500/15 flex items-center justify-center group-hover:bg-cyan-500/25 transition-colors shrink-0">
+              <CheckCircle className="h-3 w-3 md:h-4 md:w-4 text-cyan-600 dark:text-cyan-400" />
+            </div>
+          </div>
+          <div className="space-y-0.5 text-[11px] md:text-xs text-muted-foreground">
+            <div className="flex items-center justify-between"><span>{isRTL ? "كارتيلا" : "Kartela"}</span><span className="font-bold text-foreground tabular-nums">{formatNumber(kartelaTotal)}</span></div>
+            <div className="flex items-center justify-between"><span>{isRTL ? "عملاء" : "Clients"}</span><span className="font-bold text-foreground tabular-nums">{formatNumber(kartelaClients)}</span></div>
+            <div className="flex items-center justify-between"><span>{isRTL ? "أمتار" : "Meters"}</span><span className="font-bold text-foreground tabular-nums">{formatNumber(totalMeters)}m</span></div>
+          </div>
+        </button>
+
         {/* Revenue */}
         <button type="button" onClick={() => router.push("/clients")}
           className="rounded-xl md:rounded-2xl border border-amber-200 dark:border-amber-800 bg-gradient-to-br from-amber-50 to-amber-100/50 dark:from-amber-950/30 dark:to-amber-900/10 p-2.5 md:p-4 text-start hover:shadow-md transition-all group min-w-0">
@@ -1208,19 +1241,6 @@ export default function DashboardPage() {
           <div className="text-lg md:text-2xl font-bold tabular-nums text-foreground leading-tight">{formatNumber(totalRevenue)}</div>
           <div className="text-[9px] md:text-[11px] text-muted-foreground mt-0.5">EGP</div>
           <KpiMoMRow pct={revenueGrowth} />
-        </button>
-
-        {/* Meters */}
-        <button type="button" onClick={() => { dataCache.invalidate("clients_v9:"); setFilter("selectedMonth", dashTo.month); setFilter("selectedYear", dashTo.year); setFilter("selectedLevel", null); router.push("/clients"); }}
-          className="rounded-xl md:rounded-2xl border border-blue-200 dark:border-blue-800 bg-gradient-to-br from-blue-50 to-blue-100/50 dark:from-blue-950/30 dark:to-blue-900/10 p-2.5 md:p-4 text-start hover:shadow-md transition-all group min-w-0">
-          <div className="flex items-start justify-between gap-1 mb-1 md:mb-2">
-            <span className="text-[10px] md:text-xs font-semibold text-blue-600 dark:text-blue-400 leading-tight line-clamp-2">{t.totalMeters}</span>
-            <div className="h-6 w-6 md:h-8 md:w-8 rounded-lg md:rounded-xl bg-blue-500/15 flex items-center justify-center group-hover:bg-blue-500/25 transition-colors shrink-0">
-              <TrendingUp className="h-3 w-3 md:h-4 md:w-4 text-blue-600 dark:text-blue-400" />
-            </div>
-          </div>
-          <div className="text-lg md:text-2xl font-bold tabular-nums text-foreground leading-tight">{formatNumber(totalMeters)}<span className="text-xs md:text-sm font-medium ms-0.5">{isRTL ? "م" : "m"}</span></div>
-          <KpiMoMRow pct={metersGrowth} />
         </button>
 
         {/* Clients */}
@@ -1386,133 +1406,8 @@ export default function DashboardPage() {
         );
       })()}
 
-      {/* Row 1: Clustered monthly chart + Distribution */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-3 md:gap-6">
-        {/* Grouped bars: three columns per month; values always on top of each bar (no hover needed) */}
-        <div className="lg:col-span-2 min-w-0">
-          <Card className="h-full">
-            <CardHeader className="pb-1.5 md:pb-2 px-3 md:px-6 pt-3 md:pt-6">
-              <div className="flex items-center justify-between flex-wrap gap-1.5 md:gap-2">
-                <div className="min-w-0">
-                  <CardTitle className="text-sm md:text-base">
-                    {isRTL ? "الأمتار والعملاء والطلبات" : "Meters, clients & orders"}
-                  </CardTitle>
-                  <p className="text-[10px] md:text-xs text-muted-foreground mt-0.5 leading-snug line-clamp-2 md:line-clamp-none">
-                    {isRTL
-                      ? "ثلاثة أعمدة بجانب بعض لكل شهر — الرقم فوق كل عمود. الأزرق = الأمتار (المحور الأيمن)، الأخضر = العملاء، البنفسجي = الطلبات (المحور الأيسر)."
-                      : "Three bars side by side per month — value above each bar. Blue = meters (right axis), green = clients, purple = orders (left axis)."}
-                  </p>
-                </div>
-                <span className="text-[10px] md:text-xs text-muted-foreground shrink-0 max-w-[40%] md:max-w-none text-end leading-tight">
-                  {isRTL ? "القيم على الأعمدة" : "Values on bars"}
-                </span>
-              </div>
-            </CardHeader>
-            <CardContent className="px-2 pb-3 pt-0 md:px-6 md:pb-6">
-              <div className="h-[200px] md:h-[280px] w-full">
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart
-                  data={monthlyTrend.map((d: any) => ({
-                    ...d,
-                    month:
-                      dashFrom.year !== dashTo.year || dashFrom.month !== dashTo.month
-                        ? `${months[d.monthIdx]} ${d.year ?? ""}`.trim()
-                        : months[d.monthIdx],
-                  }))}
-                  margin={{ top: 22, right: 44, left: 2, bottom: 0 }}
-                  barCategoryGap="8%"
-                  barGap={0}
-                >
-                  <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" vertical={false} />
-                  <XAxis dataKey="month" tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }} axisLine={false} tickLine={false} />
-                  <YAxis
-                    yAxisId="counts"
-                    orientation="left"
-                    tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }}
-                    axisLine={false}
-                    tickLine={false}
-                    tickFormatter={(v) => (v >= 1000 ? `${(v / 1000).toFixed(0)}k` : String(v))}
-                    width={36}
-                  />
-                  <YAxis
-                    yAxisId="meters"
-                    orientation="right"
-                    tick={{ fontSize: 10, fill: "#3b82f6" }}
-                    axisLine={false}
-                    tickLine={false}
-                    tickFormatter={(v) => (v >= 1000 ? `${(v / 1000).toFixed(0)}k` : String(v))}
-                    width={40}
-                  />
-                  <Tooltip content={() => null} cursor={false} />
-                  <Legend wrapperStyle={{ fontSize: "11px", paddingTop: "4px" }} />
-                  <Bar
-                    yAxisId="meters"
-                    dataKey="meters"
-                    name={isRTL ? "الأمتار" : "Meters"}
-                    fill="#3b82f6"
-                    fillOpacity={0.9}
-                    radius={[2, 2, 0, 0]}
-                  >
-                    <LabelList
-                      dataKey="meters"
-                      position="top"
-                      offset={4}
-                      className="tabular-nums"
-                      style={{ fontSize: 9, fontWeight: 700, fill: "hsl(var(--foreground))" }}
-                      formatter={(v: any) => {
-                        const n = Number(v);
-                        return n > 0 ? formatNumber(n) : "";
-                      }}
-                    />
-                  </Bar>
-                  <Bar
-                    yAxisId="counts"
-                    dataKey="clients"
-                    name={isRTL ? "عدد العملاء" : "Clients"}
-                    fill="#10b981"
-                    fillOpacity={0.9}
-                    radius={[0, 0, 0, 0]}
-                  >
-                    <LabelList
-                      dataKey="clients"
-                      position="top"
-                      offset={4}
-                      className="tabular-nums"
-                      style={{ fontSize: 9, fontWeight: 700, fill: "hsl(var(--foreground))" }}
-                      formatter={(v: any) => {
-                        const n = Number(v);
-                        return n > 0 ? formatNumber(n) : "";
-                      }}
-                    />
-                  </Bar>
-                  <Bar
-                    yAxisId="counts"
-                    dataKey="orders"
-                    name={isRTL ? "عدد الطلبات" : "Orders"}
-                    fill="#8b5cf6"
-                    fillOpacity={0.9}
-                    radius={[0, 2, 2, 0]}
-                  >
-                    <LabelList
-                      dataKey="orders"
-                      position="top"
-                      offset={4}
-                      className="tabular-nums"
-                      style={{ fontSize: 9, fontWeight: 700, fill: "hsl(var(--foreground))" }}
-                      formatter={(v: any) => {
-                        const n = Number(v);
-                        return n > 0 ? formatNumber(n) : "";
-                      }}
-                    />
-                  </Bar>
-                </BarChart>
-              </ResponsiveContainer>
-              </div>
-            </CardContent>
-          </Card>
-        </div>
-
-        {/* Pie Chart */}
+      {/* Distribution chart */}
+      <div className="grid grid-cols-1 gap-3 md:gap-6">
         <Card>
           <CardHeader className="pb-1.5 md:pb-2 px-3 md:px-6 pt-3 md:pt-6">
             <CardTitle className="text-sm md:text-base">{t.distribution}</CardTitle>
