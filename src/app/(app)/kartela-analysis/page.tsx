@@ -190,7 +190,26 @@ export default function KartelaAnalysisPage() {
       );
 
       const allowedIds = Array.from(clientMap.keys());
-      if (allowedIds.length === 0) {
+      const selectedClientIds = filters.selectedClients?.length
+        ? filters.selectedClients
+        : (filters.selectedClient ? [filters.selectedClient] : []);
+      const scopedAllowedIds = selectedClientIds.length > 0
+        ? allowedIds.filter((id) => selectedClientIds.includes(id))
+        : allowedIds;
+
+      const selectedProductIds = filters.selectedProducts?.length
+        ? filters.selectedProducts
+        : (filters.selectedProduct ? [filters.selectedProduct] : []);
+      const selectedBaseSet = selectedProductIds.length > 0
+        ? new Set(
+            selectedProductIds
+              .map((id) => productRows?.find((p: any) => p.id === id)?.name as string | undefined)
+              .filter(Boolean)
+              .map((name) => kartelaFamilyBaseKey(name!))
+          )
+        : null;
+
+      if (scopedAllowedIds.length === 0) {
         setFamilies([]);
         setLoading(false);
         return;
@@ -198,8 +217,8 @@ export default function KartelaAnalysisPage() {
 
       const orderRows: any[] = [];
       const CHUNK = 100;
-      for (let i = 0; i < allowedIds.length; i += CHUNK) {
-        const chunk = allowedIds.slice(i, i + CHUNK);
+      for (let i = 0; i < scopedAllowedIds.length; i += CHUNK) {
+        const chunk = scopedAllowedIds.slice(i, i + CHUNK);
         // Scope by client's assigned rep only — do not filter orders.salesperson_id.
         // Invoice lines may list a different rep than the client's owner; those rows must still appear.
         const q = supabase
@@ -242,6 +261,7 @@ export default function KartelaAnalysisPage() {
         const pname = productNameFromRow(row);
         if (!pname) continue;
         const base = kartelaFamilyBaseKey(pname);
+        if (selectedBaseSet && !selectedBaseSet.has(base)) continue;
         const kartela = isKartelaProductName(pname);
         const ac = ensure(base, row.client_id as string);
         const sid = row.salesperson_id as string | null;
@@ -345,7 +365,10 @@ export default function KartelaAnalysisPage() {
     } finally {
       setLoading(false);
     }
-  }, [currentUser, salespersonId, selectedSpIds, month, year]);
+  }, [
+    currentUser, salespersonId, selectedSpIds, month, year,
+    filters.selectedClient, filters.selectedClients, filters.selectedProduct, filters.selectedProducts,
+  ]);
 
   useEffect(() => {
     fetchData();

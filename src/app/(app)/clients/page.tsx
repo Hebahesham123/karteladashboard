@@ -45,7 +45,10 @@ import { useStore } from "@/store/useStore";
 import { getLevelBadgeColor, formatNumber, cn } from "@/lib/utils";
 import { ALLOWED_CUSTOMER_TYPES, allowedCustomerTypesList } from "@/lib/customerTypes";
 import { dataCache } from "@/lib/dataCache";
+import { isKartelaProductName, kartelaFamilyBaseKey } from "@/lib/kartelaProduct";
 import type { ClientStatus, OrderLevel } from "@/types/database";
+
+const CLIENTS_PERSIST_PREFIX = "clients_boot_v1:";
 
 interface ClientRow {
   id: string;
@@ -131,6 +134,7 @@ export default function ClientsPage() {
     const selectedYear  = filters.selectedYear  ?? now.getFullYear();
     const spFilter      = salespersonId || filters.selectedSalesperson;
     const cacheKey = `clients_v9:${selectedYear}-${selectedMonth}-${spFilter || "all"}`;
+    const persistKey = `${CLIENTS_PERSIST_PREFIX}${cacheKey}`;
 
     // ── Global session cache hit → render instantly ──────────────────────
     if (!forceRefresh) {
@@ -139,6 +143,22 @@ export default function ClientsPage() {
         setClients(cached);
         setLoading(false);
         return;
+      }
+    }
+
+    // ── Fast boot cache (page reload) ────────────────────────────────────
+    if (!forceRefresh && typeof window !== "undefined") {
+      try {
+        const raw = window.sessionStorage.getItem(persistKey);
+        if (raw) {
+          const persisted = JSON.parse(raw) as ClientRow[];
+          if (Array.isArray(persisted) && persisted.length > 0) {
+            setClients(persisted);
+            setLoading(false);
+          }
+        }
+      } catch {
+        // ignore broken storage
       }
     }
 
@@ -271,28 +291,47 @@ export default function ClientsPage() {
         });
       }
 
-      // Batch-fetch notes + latest current_status from clients table
-      const allClientIds = combined.map((c) => c.id);
-      let notesMap: Record<string, { notes: string | null; current_status: string }> = {};
-      if (allClientIds.length > 0) {
-        const chunks = [];
-        for (let i = 0; i < allClientIds.length; i += 500) chunks.push(allClientIds.slice(i, i + 500));
+      // Step C: for clients with 0 meters but with kartela count, resolve product name from orders.
+      // This keeps "cartela-only" rows readable instead of showing blank product.
+      const noMeterClientIds = combined
+        .filter((c) => c.total_meters <= 0 && (c.cartela_count > 0 || c.top_product_cartela > 0) && !c.top_product_name)
+        .map((c) => c.id);
+      if (noMeterClientIds.length > 0) {
+        const topKartelaByClient = new Map<string, { base: string; qty: number }>();
+        const chunks: string[][] = [];
+        for (let i = 0; i < noMeterClientIds.length; i += 500) chunks.push(noMeterClientIds.slice(i, i + 500));
         for (const chunk of chunks) {
-          const { data: clientRows } = await supabase
-            .from("clients").select("id, notes, current_status").in("id", chunk);
-          (clientRows ?? []).forEach((c: any) => { notesMap[c.id] = { notes: c.notes ?? null, current_status: c.current_status }; });
+          const { data: orderRows } = await supabase
+            .from("orders")
+            .select("client_id, quantity, products(name)")
+            .eq("month", selectedMonth)
+            .eq("year", selectedYear)
+            .in("client_id", chunk);
+          (orderRows ?? []).forEach((r: any) => {
+            const p = Array.isArray(r.products) ? r.products[0]?.name : r.products?.name;
+            const pname = String(p ?? "").trim();
+            if (!pname || !isKartelaProductName(pname)) return;
+            const base = kartelaFamilyBaseKey(pname);
+            const qty = Number(r.quantity) || 0;
+            const prev = topKartelaByClient.get(r.client_id);
+            if (!prev || qty > prev.qty) topKartelaByClient.set(r.client_id, { base, qty });
+          });
         }
+        combined.forEach((c) => {
+          if (c.top_product_name) return;
+          const top = topKartelaByClient.get(c.id);
+          if (top?.base) c.top_product_name = top.base;
+        });
       }
-      combined.forEach((c) => {
-        const fresh = notesMap[c.id];
-        if (fresh) {
-          c.notes = fresh.notes;
-          if (fresh.current_status) c.current_status = fresh.current_status as ClientStatus;
-        }
-      });
+
+      // Performance: skip per-client notes/status hydration here.
+      // Notes are loaded in expanded log panel on demand.
 
       combined.sort((a, b) => b.total_meters - a.total_meters);
       dataCache.set(cacheKey, combined);
+      if (typeof window !== "undefined") {
+        try { window.sessionStorage.setItem(persistKey, JSON.stringify(combined)); } catch {}
+      }
       setClients(combined);
 
     } catch (err: any) {

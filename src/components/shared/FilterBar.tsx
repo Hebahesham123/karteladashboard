@@ -17,6 +17,11 @@ import { useStore } from "@/store/useStore";
 import { createClient } from "@/lib/supabase/client";
 import { cn } from "@/lib/utils";
 
+const OPTIONS_TTL_MS = 5 * 60 * 1000;
+let salespersonsCache: { ts: number; data: { id: string; name: string }[] } | null = null;
+let productsCache: { ts: number; data: { id: string; name: string }[] } | null = null;
+const clientsCacheBySp = new Map<string, { ts: number; data: { id: string; name: string; partner_id: string }[] }>();
+
 interface FilterBarProps {
   locale: string;
   showSalesperson?: boolean;
@@ -42,7 +47,7 @@ export function FilterBar({
   multiSelectDropdowns = false,
   mobileDrawerExtra,
 }: FilterBarProps) {
-  const { filters, setFilter } = useStore();
+  const { filters, setFilter, salespersonId } = useStore();
   const [salespersons, setSalespersons] = useState<{ id: string; name: string }[]>([]);
   const [clients, setClients] = useState<{ id: string; name: string; partner_id: string }[]>([]);
   const [products, setProducts] = useState<{ id: string; name: string }[]>([]);
@@ -66,32 +71,58 @@ export function FilterBar({
   useEffect(() => {
     const fetchOptions = async () => {
       const supabase = createClient();
+      const nowTs = Date.now();
+
       if (showSalesperson) {
-        const { data } = await supabase
-          .from("salespersons")
-          .select("id, name")
-          .eq("is_active", true)
-          .order("name");
-        setSalespersons(data || []);
+        if (salespersonsCache && nowTs - salespersonsCache.ts < OPTIONS_TTL_MS) {
+          setSalespersons(salespersonsCache.data);
+        } else {
+          const { data } = await supabase
+            .from("salespersons")
+            .select("id, name")
+            .eq("is_active", true)
+            .order("name");
+          const rows = data || [];
+          salespersonsCache = { ts: nowTs, data: rows };
+          setSalespersons(rows);
+        }
       }
       if (showProduct) {
-        const { data } = await supabase
-          .from("products")
-          .select("id, name")
-          .eq("is_active", true)
-          .order("name");
-        setProducts(data || []);
+        if (productsCache && nowTs - productsCache.ts < OPTIONS_TTL_MS) {
+          setProducts(productsCache.data);
+        } else {
+          const { data } = await supabase
+            .from("products")
+            .select("id, name")
+            .eq("is_active", true)
+            .order("name");
+          const rows = data || [];
+          productsCache = { ts: nowTs, data: rows };
+          setProducts(rows);
+        }
       }
       if (showClient) {
-        const { data } = await supabase
-          .from("clients")
-          .select("id, name, partner_id")
-          .order("name");
-        setClients(data || []);
+        const spKey = String(salespersonId || filters.selectedSalesperson || "__all__");
+        const cached = clientsCacheBySp.get(spKey);
+        if (cached && nowTs - cached.ts < OPTIONS_TTL_MS) {
+          setClients(cached.data);
+        } else {
+          let q = supabase
+            .from("clients")
+            .select("id, name, partner_id")
+            .order("name")
+            .limit(2000);
+          const effSp = salespersonId || filters.selectedSalesperson;
+          if (effSp) q = q.eq("salesperson_id", effSp);
+          const { data } = await q;
+          const rows = data || [];
+          clientsCacheBySp.set(spKey, { ts: nowTs, data: rows });
+          setClients(rows);
+        }
       }
     };
     fetchOptions();
-  }, [showSalesperson, showProduct, showClient]);
+  }, [showSalesperson, showProduct, showClient, filters.selectedSalesperson, salespersonId]);
 
   const statuses = [
     { value: "NEW", label: isRTL ? "جديد" : "New" },

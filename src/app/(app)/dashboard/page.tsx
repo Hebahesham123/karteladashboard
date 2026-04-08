@@ -96,6 +96,8 @@ interface DrillDownData {
   items: any[];
 }
 
+const DASH_PERSIST_PREFIX = "dash_boot_v1:";
+
 export default function DashboardPage() {
   const router = useRouter();
   const { locale, filters, setFilter, salespersonId, currentUser } = useStore();
@@ -221,6 +223,7 @@ export default function DashboardPage() {
     const cliKey = [...selectedClientIds].sort().join("|");
     const custKey = [...selectedCustTypes].sort().join("|");
     const cacheKey = `dash_v6:${dashFrom.year}-${dashFrom.month}:${dashTo.year}-${dashTo.month}-${spFilter || "all"}-${prodKey}-${cliKey}-${custKey}`;
+    const persistKey = `${DASH_PERSIST_PREFIX}${cacheKey}`;
 
     // ── Global session cache hit ──────────────────────────────────────────
     const globalCached = dataCache.get<{
@@ -255,7 +258,51 @@ export default function DashboardPage() {
       return;
     }
 
-    if (!hasLoadedOnce) setLoading(true);
+    // Fast boot after full page reload: hydrate from sessionStorage first,
+    // then refresh in background so UI appears instantly.
+    let hydratedFromPersist = false;
+    if (!forceRefresh && typeof window !== "undefined") {
+      try {
+        const raw = window.sessionStorage.getItem(persistKey);
+        if (raw) {
+          const persisted = JSON.parse(raw) as {
+            totalM: number; greenC: number; orangeC: number; redC: number; activeC: number;
+            monthlyC: number; prevM: number; prevR?: number; prevO?: number; prevMc?: number;
+            prevLg?: number; prevLo?: number; prevLr?: number; prevDorm?: number;
+            trend: any[]; totalClients: number; orderCount?: number; totalRevenue?: number; kartelaQty?: number; kartelaClients?: number;
+          };
+          if (persisted && Array.isArray(persisted.trend)) {
+            setTotalMetersValue(persisted.totalM ?? 0);
+            setGreenCount(persisted.greenC ?? 0);
+            setOrangeCount(persisted.orangeC ?? 0);
+            setRedCount(persisted.redC ?? 0);
+            setActiveClientCount(persisted.activeC ?? 0);
+            setMonthlyClientCount(persisted.monthlyC || persisted.activeC || 0);
+            setTotalClientCount(persisted.totalClients ?? 0);
+            setPrevMeters(persisted.prevM ?? 0);
+            setPrevRevenue(persisted.prevR ?? 0);
+            setPrevOrderCount(persisted.prevO ?? 0);
+            setPrevMonthlyClients(persisted.prevMc ?? 0);
+            setPrevGreenLevel(persisted.prevLg ?? 0);
+            setPrevOrangeLevel(persisted.prevLo ?? 0);
+            setPrevRedLevel(persisted.prevLr ?? 0);
+            setPrevDormant(persisted.prevDorm ?? 0);
+            setMonthlyTrend(persisted.trend ?? []);
+            setOrderCount(persisted.orderCount ?? 0);
+            setTotalRevenue(persisted.totalRevenue ?? 0);
+            setKartelaTotal(persisted.kartelaQty ?? 0);
+            setKartelaClients(persisted.kartelaClients ?? 0);
+            setHasLoadedOnce(true);
+            setLoading(false);
+            hydratedFromPersist = true;
+          }
+        }
+      } catch {
+        // Ignore storage parse errors; proceed with live fetch.
+      }
+    }
+
+    if (!hasLoadedOnce && !hydratedFromPersist) setLoading(true);
     else setIsRefreshing(true);
 
     // Instant paint from ref cache
@@ -564,6 +611,21 @@ export default function DashboardPage() {
         kartelaQty,
         kartelaClients: kartelaClientSet.size,
       });
+      if (typeof window !== "undefined") {
+        try {
+          window.sessionStorage.setItem(
+            persistKey,
+            JSON.stringify({
+              totalM: Math.round(totalM), greenC: greenC_final, orangeC: orangeC_final, redC, activeC,
+              monthlyC: consistentMonthly, prevM, prevR, prevO, prevMc, prevLg, prevLo, prevLr, prevDorm, trend,
+              totalClients: denominatorCount, orderCount: orderCountFinal, totalRevenue: Math.round(totalRev),
+              kartelaQty, kartelaClients: kartelaClientSet.size,
+            })
+          );
+        } catch {
+          // Ignore storage quota errors.
+        }
+      }
 
     } catch (err) {
       console.error("Dashboard fetch error:", err);
