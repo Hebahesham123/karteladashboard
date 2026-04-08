@@ -322,10 +322,19 @@ export default function DashboardPage() {
         const all: any[] = [];
         let from = 0;
         while (true) {
-          const { data, error } = await applyFilters(
+          const pageQuery = applyFilters(
             supabase.from(table).select(cols)
-          ).range(from, from + PAGE_SIZE - 1);
-          if (error || !data) break;
+          );
+          const { data, error } = await pageQuery.range(from, from + PAGE_SIZE - 1);
+          if (error) {
+            // Never return a silently truncated 1000-row result.
+            // Fallback once to a broad single-range read, then fail loudly.
+            console.error(`[dashboard] paged fetch failed for ${table} at offset ${from}:`, error.message);
+            const { data: fallback, error: fbErr } = await pageQuery.range(0, 29999);
+            if (fbErr) throw new Error(`[${table}] ${fbErr.message}`);
+            return fallback ?? all;
+          }
+          if (!data) break;
           all.push(...data);
           if (data.length < PAGE_SIZE) break;
           from += PAGE_SIZE;
