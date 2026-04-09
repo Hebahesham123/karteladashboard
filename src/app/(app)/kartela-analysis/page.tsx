@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { ChevronDown, ChevronRight, Loader2, RefreshCw } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
@@ -11,7 +11,7 @@ import { formatNumber } from "@/lib/utils";
 import { FilterBar } from "@/components/shared/FilterBar";
 import { PageBack } from "@/components/layout/PageBack";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 
 interface MeterBreakdownLine {
@@ -36,6 +36,12 @@ interface ClientAgg {
   /** Sheet qty when present; otherwise 1 if meters without sheet kartela; else 0. */
   kartelaQty: number;
   kartelaRevenue: number;
+  /** Distinct import categories on meter lines for this client × family. */
+  categoryLabels: string[];
+  /** Distinct فاتوره / journal refs on lines for this client × family. */
+  invoiceRefs: string[];
+  /** Distinct Odoo pricelist names (e.g. VIP (EGP)). */
+  pricelists: string[];
 }
 
 interface FamilyRow {
@@ -223,7 +229,9 @@ export default function KartelaAnalysisPage() {
         // Invoice lines may list a different rep than the client's owner; those rows must still appear.
         const q = supabase
           .from("orders")
-          .select("client_id, quantity, invoice_total, salesperson_id, meter_breakdown, products(name)")
+          .select(
+            "client_id, quantity, invoice_total, salesperson_id, meter_breakdown, category, invoice_ref, products(name)"
+          )
           .eq("month", month)
           .eq("year", year)
           .in("client_id", chunk);
@@ -252,6 +260,9 @@ export default function KartelaAnalysisPage() {
             kartelaQtySheet: 0,
             kartelaQty: 0,
             kartelaRevenue: 0,
+            categoryLabels: [],
+            invoiceRefs: [],
+            pricelists: [],
           });
         }
         return m.get(cid)!;
@@ -278,6 +289,9 @@ export default function KartelaAnalysisPage() {
         }
         const qty = Number(row.quantity) || 0;
         const inv = Number(row.invoice_total) || 0;
+        const cat = row.category != null ? String(row.category).trim() : "";
+        const iref = String(row.invoice_ref ?? "").trim();
+        const pl = row.pricelist != null ? String(row.pricelist).trim() : "";
         if (kartela) {
           ac.kartelaQtySheet += qty;
           ac.kartelaRevenue += inv;
@@ -286,6 +300,9 @@ export default function KartelaAnalysisPage() {
           ac.meterRevenue += inv;
           const br = parseMeterBreakdown(row.meter_breakdown);
           if (br.length) ac.meterBreakdown.push(...br);
+          if (cat && !ac.categoryLabels.includes(cat)) ac.categoryLabels.push(cat);
+          if (iref && !ac.invoiceRefs.includes(iref)) ac.invoiceRefs.push(iref);
+          if (pl && !ac.pricelists.includes(pl)) ac.pricelists.push(pl);
         }
       }
 
@@ -412,6 +429,9 @@ export default function KartelaAnalysisPage() {
     empty: isRTL ? "لا توجد طلبات في هذه الفترة" : "No orders in this period",
     access: isRTL ? "غير مصرح" : "Access denied",
     meterBreakdownHint: isRTL ? "تفاصيل الأمتار حسب اللون / الصفة" : "Meters by color / variant",
+    categoryCol: isRTL ? "التصنيف" : "Category",
+    invoiceCol: isRTL ? "فاتوره" : "Invoice",
+    pricelistCol: isRTL ? "قائمة الأسعار" : "Pricelist",
   };
 
   if (currentUser && currentUser.role !== "admin" && currentUser.role !== "sales") {
@@ -506,116 +526,191 @@ export default function KartelaAnalysisPage() {
           <CardContent className="py-10 text-center text-muted-foreground">{t.empty}</CardContent>
         </Card>
       ) : (
-        <div className="space-y-4">
-          {visibleFamilies.map((f) => (
-            <Card key={f.baseName} className="overflow-hidden">
-              <CardHeader className="pb-2">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div>
-                    <CardTitle className="text-lg">{f.baseName}</CardTitle>
-                    <CardDescription className="mt-1">
-                      {t.clientsMeters}: <strong>{f.clientsWithMeters}</strong>
-                      {" · "}
-                      {t.clientsKartela}: <strong>{f.clientsWithKartela}</strong>
-                      {" · "}
-                      {t.kartelaOnly}: <strong>{f.kartelaOnlyClients}</strong>
-                    </CardDescription>
-                  </div>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="gap-1 shrink-0"
-                    onClick={() => setExpanded((e) => (e === f.baseName ? null : f.baseName))}
-                  >
-                    {expanded === f.baseName ? (
-                      <ChevronDown className="h-4 w-4" />
-                    ) : (
-                      <ChevronRight className="h-4 w-4" />
-                    )}
-                    {t.details}
-                  </Button>
-                </div>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 text-sm max-w-2xl">
-                  <div className="rounded-lg border border-border bg-muted/40 px-3 py-2">
-                    <p className="text-[10px] text-muted-foreground uppercase">{t.meterQty}</p>
-                    <p className="font-bold tabular-nums">{formatNumber(Math.round(f.totalMeterQty))}</p>
-                  </div>
-                  <div className="rounded-lg border border-border bg-muted/40 px-3 py-2">
-                    <p className="text-[10px] text-muted-foreground uppercase">{t.kartelaQty}</p>
-                    <p className="font-bold tabular-nums">{formatNumber(Math.round(f.totalKartelaQty))}</p>
-                  </div>
-                  <div className="rounded-lg border border-border bg-muted/40 px-3 py-2">
-                    <p className="text-[10px] text-muted-foreground uppercase">{t.avgMeter}</p>
-                    <p className="font-bold tabular-nums">
-                      {f.avgMeterUnitPrice != null ? Math.round(f.avgMeterUnitPrice).toLocaleString() : "—"}
-                    </p>
-                  </div>
-                </div>
-
-                {f.topKartelaNoMeters.length > 0 && (
-                  <div>
-                    <p className="text-xs font-semibold text-muted-foreground mb-2">{t.topNoMeters}</p>
-                    <ul className="flex flex-wrap gap-2">
-                      {f.topKartelaNoMeters.map((c) => (
-                        <li
-                          key={c.partnerId + c.name}
-                          className="text-xs rounded-full border border-border px-2.5 py-1 bg-background"
-                        >
-                          <span className="font-medium">{c.name}</span>
-                          <span className="text-muted-foreground mx-1">·</span>
-                          <span className="tabular-nums">{formatNumber(c.kartelaQty)}</span>
-                          {c.customerType && (
-                            <span className="text-muted-foreground ms-1">({c.customerType})</span>
+        <Card className="overflow-hidden">
+          <CardContent className="p-0">
+            <div className="overflow-x-auto" dir={isRTL ? "rtl" : "ltr"}>
+              <table className="w-full min-w-[900px] text-sm border-collapse border border-border">
+                <thead>
+                  <tr className="bg-muted/70 dark:bg-muted/50">
+                    <th className="border border-border p-3 text-start font-semibold align-bottom whitespace-nowrap">
+                      {t.family}
+                    </th>
+                    <th className="border border-border p-3 text-end font-semibold align-bottom whitespace-nowrap tabular-nums">
+                      {t.clientsMeters}
+                    </th>
+                    <th className="border border-border p-3 text-end font-semibold align-bottom whitespace-nowrap tabular-nums">
+                      {t.clientsKartela}
+                    </th>
+                    <th className="border border-border p-3 text-end font-semibold align-bottom whitespace-nowrap tabular-nums">
+                      {t.kartelaOnly}
+                    </th>
+                    <th className="border border-border p-3 text-end font-semibold align-bottom whitespace-nowrap tabular-nums">
+                      {t.meterQty}
+                    </th>
+                    <th className="border border-border p-3 text-end font-semibold align-bottom whitespace-nowrap tabular-nums">
+                      {t.kartelaQty}
+                    </th>
+                    <th className="border border-border p-3 text-end font-semibold align-bottom whitespace-nowrap tabular-nums">
+                      {t.avgMeter}
+                    </th>
+                    <th className="border border-border p-3 text-start font-semibold align-bottom min-w-[200px] max-w-[320px]">
+                      {t.topNoMeters}
+                    </th>
+                    <th className="border border-border p-3 text-center font-semibold align-bottom whitespace-nowrap w-px">
+                      {t.details}
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {visibleFamilies.map((f) => (
+                    <Fragment key={f.baseName}>
+                      <tr className="hover:bg-muted/30 dark:hover:bg-muted/20 transition-colors">
+                        <td className="border border-border p-3 font-semibold align-top">
+                          {f.baseName}
+                        </td>
+                        <td className="border border-border p-3 text-end tabular-nums align-top">
+                          {f.clientsWithMeters}
+                        </td>
+                        <td className="border border-border p-3 text-end tabular-nums align-top">
+                          {f.clientsWithKartela}
+                        </td>
+                        <td className="border border-border p-3 text-end tabular-nums align-top">
+                          {f.kartelaOnlyClients}
+                        </td>
+                        <td className="border border-border p-3 text-end tabular-nums align-top">
+                          {formatNumber(Math.round(f.totalMeterQty))}
+                        </td>
+                        <td className="border border-border p-3 text-end tabular-nums align-top">
+                          {formatNumber(Math.round(f.totalKartelaQty))}
+                        </td>
+                        <td className="border border-border p-3 text-end tabular-nums align-top">
+                          {f.avgMeterUnitPrice != null
+                            ? Math.round(f.avgMeterUnitPrice).toLocaleString()
+                            : "—"}
+                        </td>
+                        <td className="border border-border p-3 text-xs align-top max-w-[320px]">
+                          {f.topKartelaNoMeters.length === 0 ? (
+                            <span className="text-muted-foreground">—</span>
+                          ) : (
+                            <ul className="space-y-1.5 text-foreground/90">
+                              {f.topKartelaNoMeters.map((c) => (
+                                <li key={`${c.partnerId}-${c.name}`} className="leading-snug">
+                                  <span className="font-medium">{c.name}</span>
+                                  <span className="text-muted-foreground mx-1">·</span>
+                                  <span className="tabular-nums">{formatNumber(c.kartelaQty)}</span>
+                                  {c.customerType ? (
+                                    <span className="text-muted-foreground ms-1">({c.customerType})</span>
+                                  ) : null}
+                                </li>
+                              ))}
+                            </ul>
                           )}
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
-
-                {expanded === f.baseName && (
-                  <div className="rounded-lg border border-border overflow-x-auto">
-                    <table className="w-full text-sm caption-bottom">
-                      <thead>
-                        <tr className="border-b border-border bg-muted/50 text-left rtl:text-right">
-                          <th className="p-2 font-medium">{t.partner}</th>
-                          <th className="p-2 font-medium">{isRTL ? "العميل" : "Client"}</th>
-                          <th className="p-2 font-medium">{t.salesperson}</th>
-                          <th className="p-2 font-medium">{t.type}</th>
-                          <th className="p-2 font-medium text-end">{t.meterQty}</th>
-                          <th className="p-2 font-medium text-end">{t.kartelaQty}</th>
+                        </td>
+                        <td className="border border-border p-3 align-top whitespace-nowrap">
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="gap-1 h-8 px-2"
+                            onClick={() => setExpanded((e) => (e === f.baseName ? null : f.baseName))}
+                          >
+                            {expanded === f.baseName ? (
+                              <ChevronDown className="h-4 w-4 shrink-0" />
+                            ) : (
+                              <ChevronRight className="h-4 w-4 shrink-0" />
+                            )}
+                            <span className="hidden sm:inline">{t.details}</span>
+                          </Button>
+                        </td>
+                      </tr>
+                      {expanded === f.baseName && (
+                        <tr>
+                          <td colSpan={12} className="border border-border border-t-0 p-0 bg-muted/20">
+                            <div className="overflow-x-auto p-3">
+                              <table className="w-full min-w-[640px] text-sm border-collapse border border-border caption-bottom">
+                                <thead>
+                                  <tr className="bg-muted/60 dark:bg-muted/40">
+                                    <th className="border border-border p-2 font-semibold text-start">
+                                      {t.partner}
+                                    </th>
+                                    <th className="border border-border p-2 font-semibold text-start">
+                                      {isRTL ? "العميل" : "Client"}
+                                    </th>
+                                    <th className="border border-border p-2 font-semibold text-start">
+                                      {t.salesperson}
+                                    </th>
+                                    <th className="border border-border p-2 font-semibold text-start">
+                                      {t.type}
+                                    </th>
+                                    <th className="border border-border p-2 font-semibold text-start">
+                                      {t.categoryCol}
+                                    </th>
+                                    <th className="border border-border p-2 font-semibold text-start">
+                                      {t.invoiceCol}
+                                    </th>
+                                    <th className="border border-border p-2 font-semibold text-start">
+                                      {t.pricelistCol}
+                                    </th>
+                                    <th className="border border-border p-2 font-semibold text-end">
+                                      {t.meterQty}
+                                    </th>
+                                    <th className="border border-border p-2 font-semibold text-end">
+                                      {t.kartelaQty}
+                                    </th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {f.clients.map((c) => (
+                                    <tr key={c.clientId} className="bg-background">
+                                      <td className="border border-border p-2 font-mono text-xs text-muted-foreground">
+                                        {c.partnerId}
+                                      </td>
+                                      <td className="border border-border p-2 font-medium">{c.name}</td>
+                                      <td
+                                        className="border border-border p-2 text-xs max-w-[140px] truncate"
+                                        title={c.salespersonName ?? ""}
+                                      >
+                                        {c.salespersonName ?? "—"}
+                                      </td>
+                                      <td className="border border-border p-2 text-xs">
+                                        {c.customerType ?? "—"}
+                                      </td>
+                                      <td className="border border-border p-2 text-xs max-w-[140px]">
+                                        {c.categoryLabels.length
+                                          ? c.categoryLabels.join(", ")
+                                          : "—"}
+                                      </td>
+                                      <td className="border border-border p-2 text-xs font-mono max-w-[160px] break-all">
+                                        {c.invoiceRefs.length ? c.invoiceRefs.join(", ") : "—"}
+                                      </td>
+                                      <td className="border border-border p-2 text-xs max-w-[120px]">
+                                        {c.pricelists.length ? c.pricelists.join(", ") : "—"}
+                                      </td>
+                                      <td className="border border-border p-2 text-end">
+                                        <MeterBreakdownCell
+                                          total={c.meterQty}
+                                          lines={c.meterBreakdown}
+                                          isRTL={isRTL}
+                                          labelShow={t.meterBreakdownHint}
+                                        />
+                                      </td>
+                                      <td className="border border-border p-2 text-end tabular-nums">
+                                        {formatNumber(c.kartelaQty)}
+                                      </td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                          </td>
                         </tr>
-                      </thead>
-                      <tbody>
-                        {f.clients.map((c) => (
-                            <tr key={c.clientId} className="border-b border-border/80 last:border-0">
-                              <td className="p-2 font-mono text-xs text-muted-foreground">{c.partnerId}</td>
-                              <td className="p-2 font-medium">{c.name}</td>
-                              <td className="p-2 text-xs max-w-[140px] truncate" title={c.salespersonName ?? ""}>
-                                {c.salespersonName ?? "—"}
-                              </td>
-                              <td className="p-2 text-xs">{c.customerType ?? "—"}</td>
-                              <td className="p-2 text-end">
-                                <MeterBreakdownCell
-                                  total={c.meterQty}
-                                  lines={c.meterBreakdown}
-                                  isRTL={isRTL}
-                                  labelShow={t.meterBreakdownHint}
-                                />
-                              </td>
-                              <td className="p-2 text-end tabular-nums">{formatNumber(c.kartelaQty)}</td>
-                            </tr>
-                          ))}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
-              </CardContent>
-            </Card>
-          ))}
-        </div>
+                      )}
+                    </Fragment>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </CardContent>
+        </Card>
       )}
     </div>
   );

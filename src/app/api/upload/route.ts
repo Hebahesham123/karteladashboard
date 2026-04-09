@@ -182,6 +182,12 @@ export async function POST(req: NextRequest) {
             }))
             .filter((x: { label: string; meters: number }) => x.label && x.meters > 0)
         : [];
+      const invRef =
+        row.invoice_ref != null && String(row.invoice_ref).trim() !== ""
+          ? String(row.invoice_ref).trim().slice(0, 512)
+          : "";
+      const catRaw = row.category != null ? String(row.category).trim() : "";
+      const plRaw = row.pricelist != null ? String(row.pricelist).trim() : "";
       orderInserts.push({
         client_id: clientId,
         salesperson_id: spId || null,
@@ -191,6 +197,9 @@ export async function POST(req: NextRequest) {
         quantity: qtyNum,
         invoice_total: Number(row.invoice_total) || 0,
         branch: row.branch?.trim() || null,
+        invoice_ref: invRef,
+        category: catRaw ? catRaw.slice(0, 512) : null,
+        pricelist: plRaw ? plRaw.slice(0, 256) : null,
         upload_batch_id: batchId,
         ...(row.invoice_date && String(row.invoice_date).trim()
           ? { invoice_date: String(row.invoice_date).trim().slice(0, 10) }
@@ -219,7 +228,10 @@ export async function POST(req: NextRequest) {
       const results = await Promise.all(
         batch.map((chunk) =>
           db.from("orders")
-            .upsert(chunk, { onConflict: "client_id,product_id,month,year,salesperson_id", ignoreDuplicates: false })
+            .upsert(chunk, {
+              onConflict: "client_id,product_id,month,year,salesperson_id,invoice_ref",
+              ignoreDuplicates: false,
+            })
             .select("id")
         )
       );

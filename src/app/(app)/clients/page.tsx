@@ -45,6 +45,7 @@ import { useStore } from "@/store/useStore";
 import { getLevelBadgeColor, formatNumber, cn } from "@/lib/utils";
 import { ALLOWED_CUSTOMER_TYPES, allowedCustomerTypesList } from "@/lib/customerTypes";
 import { dataCache } from "@/lib/dataCache";
+import { fetchClientMeterOrderImportFields } from "@/lib/orderImportMeta";
 import { isKartelaProductName, kartelaFamilyBaseKey } from "@/lib/kartelaProduct";
 import type { ClientStatus, OrderLevel } from "@/types/database";
 
@@ -71,6 +72,19 @@ interface ClientRow {
   kartela_month: number | null;
   kartela_year: number | null;
   kartela_cross_month: boolean;
+  /** From meter order lines (import): product category */
+  order_import_category: string | null;
+  order_import_pricelist: string | null;
+  order_import_invoice: string | null;
+}
+
+function withOrderImportFields(c: ClientRow): ClientRow {
+  return {
+    ...c,
+    order_import_category: c.order_import_category ?? null,
+    order_import_pricelist: c.order_import_pricelist ?? null,
+    order_import_invoice: c.order_import_invoice ?? null,
+  };
 }
 
 export default function ClientsPage() {
@@ -133,14 +147,14 @@ export default function ClientsPage() {
     const selectedMonth = filters.selectedMonth ?? (now.getMonth() + 1);
     const selectedYear  = filters.selectedYear  ?? now.getFullYear();
     const spFilter      = salespersonId || filters.selectedSalesperson;
-    const cacheKey = `clients_v9:${selectedYear}-${selectedMonth}-${spFilter || "all"}`;
+    const cacheKey = `clients_v10:${selectedYear}-${selectedMonth}-${spFilter || "all"}`;
     const persistKey = `${CLIENTS_PERSIST_PREFIX}${cacheKey}`;
 
     // ── Global session cache hit → render instantly ──────────────────────
     if (!forceRefresh) {
       const cached = dataCache.get<ClientRow[]>(cacheKey);
       if (cached) {
-        setClients(cached);
+        setClients(cached.map(withOrderImportFields));
         setLoading(false);
         return;
       }
@@ -153,7 +167,7 @@ export default function ClientsPage() {
         if (raw) {
           const persisted = JSON.parse(raw) as ClientRow[];
           if (Array.isArray(persisted) && persisted.length > 0) {
-            setClients(persisted);
+            setClients(persisted.map((c) => withOrderImportFields(c as ClientRow)));
             setLoading(false);
           }
         }
@@ -269,6 +283,9 @@ export default function ClientsPage() {
           kartela_month:       ord.kartela_month ? Number(ord.kartela_month) : null,
           kartela_year:        ord.kartela_year  ? Number(ord.kartela_year)  : null,
           kartela_cross_month: Boolean(ord.kartela_cross_month),
+          order_import_category: null,
+          order_import_pricelist: null,
+          order_import_invoice: null,
         });
       });
 
@@ -287,6 +304,9 @@ export default function ClientsPage() {
             level: "INACTIVE" as OrderLevel, notes: null,
             month: selectedMonth, year: selectedYear,
             kartela_month: null, kartela_year: null, kartela_cross_month: false,
+            order_import_category: null,
+            order_import_pricelist: null,
+            order_import_invoice: null,
           });
         });
       }
@@ -324,6 +344,25 @@ export default function ClientsPage() {
         });
       }
 
+      // Step D: category / pricelist / invoice from meter lines (selected month)
+      const idsForImport = combined.map((c) => c.id);
+      if (idsForImport.length > 0) {
+        const { byClient, error: importMetaErr } = await fetchClientMeterOrderImportFields(
+          supabase,
+          idsForImport,
+          selectedMonth,
+          selectedYear
+        );
+        if (importMetaErr) console.warn("[clients] order import meta:", importMetaErr);
+        combined.forEach((c) => {
+          const m = byClient.get(c.id);
+          if (!m) return;
+          c.order_import_category = m.category || null;
+          c.order_import_pricelist = m.pricelist || null;
+          c.order_import_invoice = m.invoice || null;
+        });
+      }
+
       // Performance: skip per-client notes/status hydration here.
       // Notes are loaded in expanded log panel on demand.
 
@@ -356,6 +395,9 @@ export default function ClientsPage() {
     client: isRTL ? "العميل" : "Client",
     salesperson: isRTL ? "المندوب" : "Salesperson",
     product: isRTL ? "المنتج" : "Product",
+    importCategory: isRTL ? "التصنيف" : "Category",
+    importPricelist: isRTL ? "قائمة الأسعار" : "Pricelist",
+    importInvoice: isRTL ? "فاتوره" : "Invoice",
     meters: isRTL ? "الأمتار" : "Meters",
     cartela: isRTL ? "كارتله" : "Cartelah",
     date: isRTL ? "الشهر" : "Month",
@@ -434,7 +476,7 @@ export default function ClientsPage() {
   };
 
   const invalidateClientCache = () => {
-    dataCache.invalidate("clients_v9:");
+    dataCache.invalidate("clients_v10:");
   };
   const toggleRow = (id: string) => setSelectedRows(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
   const toggleAll = (rows: ClientRow[]) => setSelectedRows(prev => prev.size === rows.length ? new Set() : new Set(rows.map(r => r.id)));
@@ -554,6 +596,38 @@ export default function ClientsPage() {
             {product}
           </span>
         );
+      },
+    },
+    // ── Import: category / pricelist / invoice (meter lines, this month) ─
+    {
+      accessorKey: "order_import_category",
+      header: t.importCategory,
+      cell: ({ getValue }) => {
+        const v = getValue() as string | null;
+        if (!v) return <span className="text-muted-foreground text-xs">—</span>;
+        return (
+          <span className="text-xs max-w-[200px] line-clamp-2" title={v}>
+            {v}
+          </span>
+        );
+      },
+    },
+    {
+      accessorKey: "order_import_pricelist",
+      header: t.importPricelist,
+      cell: ({ getValue }) => {
+        const v = getValue() as string | null;
+        if (!v) return <span className="text-muted-foreground text-xs">—</span>;
+        return <span className="text-xs max-w-[140px] truncate" title={v}>{v}</span>;
+      },
+    },
+    {
+      accessorKey: "order_import_invoice",
+      header: t.importInvoice,
+      cell: ({ getValue }) => {
+        const v = getValue() as string | null;
+        if (!v) return <span className="text-muted-foreground text-xs">—</span>;
+        return <span className="text-xs font-mono max-w-[180px] truncate" title={v}>{v}</span>;
       },
     },
     // ── Meters ────────────────────────────────────────────────────────
@@ -808,6 +882,9 @@ export default function ClientsPage() {
         [isRTL ? "نوع العميل" : "Customer Type"]: c.customer_type || "",
         [t.salesperson]: c.salesperson_name || c.salesperson_code || "",
         [t.product]: c.top_product_name || "",
+        [t.importCategory]: c.order_import_category || "",
+        [t.importPricelist]: c.order_import_pricelist || "",
+        [t.importInvoice]: c.order_import_invoice || "",
         [t.meters]: c.total_meters,
         [isRTL ? "الإجمالي (EGP)" : "Revenue (EGP)"]: c.total_revenue || 0,
         [isRTL ? "عدد الطلبات" : "Orders"]: c.order_count || 0,
@@ -980,7 +1057,7 @@ export default function ClientsPage() {
             variant="outline"
             size="sm"
             onClick={() => {
-              dataCache.invalidate("clients_v9:");
+              dataCache.invalidate("clients_v10:");
               fetchClients(true);
             }}
             className="gap-1.5 md:gap-2 h-8 text-xs md:text-sm px-2 md:px-3"
@@ -1222,7 +1299,7 @@ export default function ClientsPage() {
                 {loading ? (
                   Array(10).fill(0).map((_, i) => (
                     <tr key={i} className="border-b border-border/50">
-                      {Array(7).fill(0).map((_, j) => (
+                      {Array(14).fill(0).map((_, j) => (
                         <td key={j} className="px-4 py-3">
                           <div className="h-4 bg-muted rounded animate-pulse" />
                         </td>

@@ -28,6 +28,9 @@ interface ParsedRow {
   invoice_total: number;             // sum of invoice amounts for this product+client+month
   customer_type: string;             // e.g. تجاري / جملة / VIP
   branch: string;                    // branch name
+  category: string;                  // product / import category (Odoo: Invoice lines/Product/Product Category)
+  invoice_ref: string;               // فاتوره / Invoice lines/Number (e.g. oline/2026/00344)
+  pricelist: string;                 // Odoo Pricelist e.g. VIP (EGP), تجاري (EGP)
   cartela_qty: number;               // كارتله count (explicit or assumed=1)
   cartela_cross_month: boolean;      // true = كارتله came from a different month
   cartela_assumed: boolean;          // true = no explicit كارتله row, defaulted to 1
@@ -58,6 +61,9 @@ interface DetectedLayoutInfo {
   colQty: number;
   colCartons: number;
   colTotal: number;
+  colCategory: number;
+  colInvoiceRef: number;
+  colPricelist: number;
 }
 
 const MONTHS_AR = ["يناير","فبراير","مارس","أبريل","مايو","يونيو","يوليو","أغسطس","سبتمبر","أكتوبر","نوفمبر","ديسمبر"];
@@ -285,6 +291,7 @@ export function ExcelUpload({ locale }: { locale: string }) {
     let colDate = 0, colSP = 1, colPartnerName = 2, colPartnerId = 3;
     let colProduct = 4, colVariant = -1, colQty = 5, colCartons = 6;
     let colTotal = -1, colCustomerType = -1, colBranch = -1;
+    let colCategory = -1, colInvoiceRef = -1, colPricelist = -1;
     let startRow = 0;
     let layoutInferred = false;
 
@@ -293,7 +300,8 @@ export function ExcelUpload({ locale }: { locale: string }) {
     if (firstRow && typeof firstRow[0] === "string" && isNaN(Number(String(firstRow[0]).trim()))) {
       startRow = 1;
       firstRow.forEach((cell: any, idx: number) => {
-        const h = String(cell ?? "").toLowerCase().replace(/[\s/_\-]/g, "");
+        const rawCell = String(cell ?? "").toLowerCase();
+        const h = rawCell.replace(/[\s/_\-]/g, "");
         if      (h.includes("date") || h.includes("تاريخ") || h.includes("month") || h.includes("شهر"))             colDate        = idx;
         else if (h.includes("salesperson") || h.includes("مندوب"))                                                    colSP          = idx;
         else if ((h.includes("partner") && h.includes("name")) || h.includes("اسمالشريك"))                           colPartnerName = idx;
@@ -301,7 +309,31 @@ export function ExcelUpload({ locale }: { locale: string }) {
         else if (h.includes("attribute") || h.includes("variant"))                                                    colVariant     = idx;
         else if (h.includes("carton") || h.includes("كرتل") || h.includes("كارتل") || h.includes("kartela"))        colCartons     = idx;
         else if (h.includes("quantity") || h.includes("كمية") || h.includes("الكمية") || h.includes("meter") || h.includes("متر")) colQty = idx;
+        // Product category BEFORE generic "product" (Odoo: Invoice lines/Product/Product Category)
+        else if (
+          h.includes("productcategory") ||
+          (h.includes("product") && h.includes("category")) ||
+          h.includes("category") ||
+          h.includes("تصنيف") ||
+          h.includes("الفئة")
+        ) colCategory = idx;
+        // Invoice line number (Odoo: Invoice lines/Number) — raw header keeps "lines" vs stripped "invoicelines"
+        else if (
+          h.includes("فاتوره") ||
+          h.includes("فاتورة") ||
+          (h.includes("رقم") && h.includes("فاتور")) ||
+          h.includes("journalentry") ||
+          h.includes("account.move") ||
+          (h.includes("move") && (h.includes("name") || h.includes("ref"))) ||
+          (h.includes("invoicelines") && h.includes("number")) ||
+          (rawCell.includes("invoice lines") && rawCell.includes("number") && !rawCell.includes("quantity"))
+        ) colInvoiceRef = idx;
+        else if (h.includes("pricelist") || h.includes("pricelistname") || (h.includes("price") && h.includes("list")))
+          colPricelist = idx;
         else if ((h.includes("product") || h.includes("منتج")) &&
+                 !h.includes("category") &&
+                 !rawCell.includes("product category") &&
+                 !h.includes("تصنيف") &&
                  !h.includes("color") && !h.includes("colour") && !h.includes("لون") &&
                  !h.includes("code")  && !h.includes("كود"))                                                         colProduct     = idx;
         // New: invoice total, customer type, branch
@@ -309,13 +341,22 @@ export function ExcelUpload({ locale }: { locale: string }) {
         else if (h.includes("customertype") || h.includes("نوعالعميل") || h.includes("نوع"))                        colCustomerType= idx;
         else if (h.includes("branch") || h.includes("فرع"))                                                          colBranch      = idx;
       });
-      // Handle composite headers like "Invoice lines/Total" and "Invoice lines/Partner/Customer Type"
+      // Handle composite Odoo / grouped headers (slashes preserved in raw2)
       firstRow.forEach((cell: any, idx: number) => {
         const raw2 = String(cell ?? "").toLowerCase();
         if (raw2.endsWith("/total") || raw2 === "total")                                          colTotal       = idx;
         if (raw2.includes("customer type") || raw2.includes("customertype"))                      colCustomerType= idx;
         if (raw2.includes("branch"))                                                               colBranch      = idx;
         if (raw2.includes("attribute values") || raw2.includes("attribute"))                      colVariant     = idx;
+        if (raw2.includes("product") && raw2.includes("category"))                               colCategory    = idx;
+        if (raw2.includes("invoice lines") && raw2.includes("number") && !raw2.includes("quantity")) colInvoiceRef = idx;
+        if (raw2.includes("pricelist") || raw2.includes("price list"))                          colPricelist   = idx;
+        if (
+          colInvoiceRef < 0 &&
+          ((raw2.includes("journal") && raw2.includes("entry")) ||
+            raw2.includes("account.move") ||
+            raw2.includes("account_move"))
+        ) colInvoiceRef = idx;
       });
     }
 
@@ -338,7 +379,7 @@ export function ExcelUpload({ locale }: { locale: string }) {
     if (colVariant === -1) {
       const sample = raw.slice(startRow, startRow + 30).filter((r) => r?.length);
       for (let c = 0; c < (sample[0]?.length ?? 10); c++) {
-        if (c === colQty || c === colCartons || c === colProduct) continue;
+        if (c === colQty || c === colCartons || c === colProduct || c === colCategory || c === colPricelist || c === colInvoiceRef) continue;
         const vals = sample.map((r) => String(r[c] ?? "").trim()).filter(Boolean);
         if (vals.some((v) => /^COLOR\s*:/i.test(v) || /كارتله|كارتلة/i.test(v))) { colVariant = c; break; }
       }
@@ -416,10 +457,14 @@ export function ExcelUpload({ locale }: { locale: string }) {
     // ── Step 1: Forward-fill blank cells for Date + Salesperson only (Odoo groups lines under one invoice).
     // Do not fill Partner name/ID — each line is a different client unless the cell is non-empty.
     const fillLast: Record<number, any> = {};
+    const fillCols = [colDate, colSP];
+    if (colInvoiceRef >= 0) fillCols.push(colInvoiceRef);
+    if (colCategory >= 0) fillCols.push(colCategory);
+    if (colPricelist >= 0) fillCols.push(colPricelist);
     for (let i = startRow; i < raw.length; i++) {
       const row = raw[i];
       if (!row) continue;
-      for (const col of [colDate, colSP]) {
+      for (const col of fillCols) {
         const v = row[col];
         const empty = v === null || v === undefined || String(v).trim() === "";
         if (!empty) fillLast[col] = v;
@@ -441,6 +486,9 @@ export function ExcelUpload({ locale }: { locale: string }) {
       invoice_total: number;  // sum of invoice amounts
       customer_type: string;  // client type (تجاري / جملة / VIP)
       branch: string;         // branch name
+      category: string;
+      invoice_ref: string;
+      pricelist: string;
       cartela_qty: number;    // total from explicit كارتله rows
       isValid: boolean; errors: string[];
       variants: { name: string; meters: number }[]; // color variants combined
@@ -463,6 +511,9 @@ export function ExcelUpload({ locale }: { locale: string }) {
       const rowTotal        = colTotal >= 0 ? (parseFloat(String(row[colTotal] ?? "").replace(/[^\d.]/g, "")) || 0) : 0;
       const rowCustType     = colCustomerType >= 0 ? String(row[colCustomerType] ?? "").trim() : "";
       const rowBranch       = colBranch >= 0 ? String(row[colBranch] ?? "").trim() : "";
+      const rowCategory     = colCategory >= 0 ? String(row[colCategory] ?? "").trim() : "";
+      const rowInvoiceRef   = colInvoiceRef >= 0 ? String(row[colInvoiceRef] ?? "").trim() : "";
+      const rowPricelist    = colPricelist >= 0 ? String(row[colPricelist] ?? "").trim() : "";
 
       let meters = 0;
       let cartonsCount = 0;
@@ -474,7 +525,7 @@ export function ExcelUpload({ locale }: { locale: string }) {
         const isCartela  = /كارتله|كارتلة|كارتيله|كارتيلة|cartela/i.test(variantRaw);
         let qty = 0;
         for (const c of [colQty, colQty + 1, colQty - 1]) {
-          if (c < 0 || c === colProduct || c === colVariant) continue;
+          if (c < 0 || c === colProduct || c === colVariant || c === colCategory || c === colPricelist || c === colInvoiceRef) continue;
           const v = parseFloat(String(row[c] ?? "").replace(/[^\d.]/g, ""));
           if (!isNaN(v) && v > 0) { qty = v; break; }
         }
@@ -495,7 +546,8 @@ export function ExcelUpload({ locale }: { locale: string }) {
       // Include salesperson so lines on the same invoice for the same client+product+month
       // (different reps) are not merged into one row / one DB upsert.
       const spAggKey = (spCode || "").trim() || "__none__";
-      const aggKey = `${month}|${year}|${partnerId}|${baseProduct}|${spAggKey}`;
+      const invKey = rowInvoiceRef;
+      const aggKey = `${month}|${year}|${partnerId}|${baseProduct}|${spAggKey}|${invKey}`;
 
       const errors: string[] = [];
       if (!spCode) errors.push(isRTL ? "المندوب مطلوب" : "Salesperson required");
@@ -511,6 +563,9 @@ export function ExcelUpload({ locale }: { locale: string }) {
         if (df.iso < ex.invoice_date_iso) ex.invoice_date_iso = df.iso;
         if (!ex.customer_type && rowCustType) ex.customer_type = rowCustType;
         if (!ex.branch && rowBranch)          ex.branch        = rowBranch;
+        if (!ex.category && rowCategory) ex.category = rowCategory;
+        if (!ex.invoice_ref && rowInvoiceRef) ex.invoice_ref = rowInvoiceRef;
+        if (!ex.pricelist && rowPricelist) ex.pricelist = rowPricelist;
         if (!ex.partner_name && displayPartnerName) ex.partner_name = displayPartnerName;
         // Track this color variant's contribution
         if (meters > 0 && variantName) ex.variants.push({ name: variantName, meters });
@@ -528,6 +583,9 @@ export function ExcelUpload({ locale }: { locale: string }) {
           invoice_total: rowTotal,
           customer_type: rowCustType,
           branch:        rowBranch,
+          category:      rowCategory,
+          invoice_ref:   rowInvoiceRef,
+          pricelist:     rowPricelist,
           cartela_qty:   cartonsCount,
           isValid: errors.length === 0, errors,
           variants: meters > 0 && variantName ? [{ name: variantName, meters }] : [],
@@ -563,6 +621,9 @@ export function ExcelUpload({ locale }: { locale: string }) {
       colQty,
       colCartons,
       colTotal,
+      colCategory,
+      colInvoiceRef,
+      colPricelist,
     });
 
     return Array.from(aggMap.values() as Iterable<AggEntry>).map((entry) => {
@@ -634,6 +695,9 @@ export function ExcelUpload({ locale }: { locale: string }) {
       month: number; year: number; salesperson_code: string; salesperson_name: string;
       partner_name: string; partner_id: string; product_name: string; quantity: number;
       invoice_total: number; customer_type: string; branch: string;
+      category: string;
+      invoice_ref: string;
+      pricelist: string;
       invoice_date: string;
       meter_breakdown?: { label: string; meters: number }[];
     };
@@ -643,6 +707,7 @@ export function ExcelUpload({ locale }: { locale: string }) {
         salesperson_code: row.salesperson_code, salesperson_name: row.salesperson_name,
         partner_name: row.partner_name, partner_id: row.partner_id,
         customer_type: row.customer_type, branch: row.branch,
+        category: row.category, invoice_ref: row.invoice_ref, pricelist: row.pricelist,
       };
       // Meters order — in the product's own month
       if (row.quantity > 0) {
@@ -896,6 +961,12 @@ export function ExcelUpload({ locale }: { locale: string }) {
                 {" · "}
                 {isRTL ? "المنتج" : "Product"}: {colLabel(detectedLayout.colProduct)}
                 {" · "}
+                {isRTL ? "التصنيف" : "Category"}: {colLabel(detectedLayout.colCategory)}
+                {" · "}
+                {isRTL ? "فاتوره" : "Invoice ref"}: {colLabel(detectedLayout.colInvoiceRef)}
+                {" · "}
+                {isRTL ? "قائمة الأسعار" : "Pricelist"}: {colLabel(detectedLayout.colPricelist)}
+                {" · "}
                 {isRTL ? "الكمية" : "Qty"}: {colLabel(detectedLayout.colQty)}
                 {" · "}
                 {isRTL ? "الصفة/اللون" : "Variant"}: {colLabel(detectedLayout.colVariant)}
@@ -939,6 +1010,9 @@ export function ExcelUpload({ locale }: { locale: string }) {
                         isRTL ? "اسم العميل"    : "Client",
                         isRTL ? "رقم الشريك"    : "Partner ID",
                         isRTL ? "المنتج"        : "Product",
+                        isRTL ? "التصنيف"      : "Category",
+                        isRTL ? "فاتوره"        : "Invoice",
+                        isRTL ? "قائمة الأسعار" : "Pricelist",
                         isRTL ? "الأمتار (م)"   : "Meters (m)",
                         isRTL ? "الإجمالي"      : "Total (EGP)",
                         isRTL ? "نوع العميل"    : "Cust. Type",
@@ -976,6 +1050,15 @@ export function ExcelUpload({ locale }: { locale: string }) {
                         <td className="px-3 py-2 font-mono text-sm font-semibold">{row.partner_id}</td>
                         {/* Product */}
                         <td className="px-3 py-2 font-medium">{row.product_name}</td>
+                        <td className="px-3 py-2 text-xs max-w-[120px] truncate" title={row.category}>
+                          {row.category ? row.category : <span className="text-muted-foreground">—</span>}
+                        </td>
+                        <td className="px-3 py-2 font-mono text-[10px] max-w-[100px] truncate" title={row.invoice_ref}>
+                          {row.invoice_ref ? row.invoice_ref : <span className="text-muted-foreground">—</span>}
+                        </td>
+                        <td className="px-3 py-2 text-xs max-w-[120px] truncate" title={row.pricelist}>
+                          {row.pricelist ? row.pricelist : <span className="text-muted-foreground">—</span>}
+                        </td>
                         {/* Meters — with variant breakdown if multiple colors combined */}
                         <td className="px-3 py-2 font-bold text-blue-600 dark:text-blue-400">
                           {row.quantity > 0 ? (

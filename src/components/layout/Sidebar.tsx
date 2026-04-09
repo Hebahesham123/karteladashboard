@@ -12,6 +12,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Layers,
+  UserSearch,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -26,8 +27,22 @@ interface NavItem {
 const navItems: NavItem[] = [
   { labelEn: "Dashboard", labelAr: "لوحة التحكم", href: "/dashboard", icon: LayoutDashboard, role: "admin" },
   { labelEn: "Kartela analysis", labelAr: "تحليل الكارتيلا", href: "/kartela-analysis", icon: Layers, role: "admin" },
+  {
+    labelEn: "Clients by category & price",
+    labelAr: "عملاء حسب التصنيف والسعر",
+    href: "/clients-by-category-price",
+    icon: UserSearch,
+    role: "admin",
+  },
   { labelEn: "My Clients", labelAr: "عملائي", href: "/sales", icon: TrendingUp, role: "sales" },
   { labelEn: "Kartela analysis", labelAr: "تحليل الكارتيلا", href: "/kartela-analysis", icon: Layers, role: "sales" },
+  {
+    labelEn: "Clients by category & price",
+    labelAr: "عملاء حسب التصنيف والسعر",
+    href: "/clients-by-category-price",
+    icon: UserSearch,
+    role: "sales",
+  },
   { labelEn: "Clients", labelAr: "العملاء", href: "/clients", icon: Users, role: "admin" },
   { labelEn: "Admin", labelAr: "الإدارة", href: "/admin", icon: Settings, role: "admin" },
 ];

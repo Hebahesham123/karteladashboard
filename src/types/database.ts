@@ -84,6 +84,11 @@ export interface Database {
           order_level: OrderLevel;
           upload_batch_id: string | null;
           invoice_date: string | null;
+          invoice_total: number;
+          branch: string | null;
+          category: string | null;
+          invoice_ref: string;
+          pricelist: string | null;
           /** JSON [{ label, meters }] from Excel color/variant lines */
           meter_breakdown: { label: string; meters: number }[] | null;
           created_at: string;
