@@ -35,10 +35,16 @@ interface ParsedRow {
   cartela_cross_month: boolean;      // true = كارتله came from a different month
   cartela_assumed: boolean;          // true = no explicit كارتله row, defaulted to 1
   cartela_month: number | null;      // the actual month the كارتله was recorded in
-  level: "RED" | "ORANGE" | "GREEN" | "INACTIVE";
+  level: "RED" | "ORANGE" | "GREEN";
   isValid: boolean;
   errors: string[];
   variants: { name: string; meters: number }[]; // color variants combined into total
+}
+
+function toParsedLevel(meters: number): "RED" | "ORANGE" | "GREEN" {
+  const level = getOrderLevel(meters);
+  if (level === "GREEN" || level === "ORANGE") return level;
+  return "RED";
 }
 
 interface UploadResult {
@@ -656,7 +662,7 @@ export function ExcelUpload({ locale }: { locale: string }) {
         cartela_cross_month: cartelaCrossMonth,
         cartela_assumed:     cartelaAssumed,
         cartela_month:       cartelaMonth,
-        level:               getOrderLevel(entry.quantity),
+        level:               toParsedLevel(entry.quantity),
       };
     });
   }, [isRTL, selectedMonth, selectedYear]);

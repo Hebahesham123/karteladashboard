@@ -20,7 +20,7 @@ export async function getOrSetServerCache<T>(
 }
 
 export function invalidateServerCache(prefix: string) {
-  for (const key of cache.keys()) {
+  for (const key of Array.from(cache.keys())) {
     if (key.startsWith(prefix)) cache.delete(key);
   }
 }
