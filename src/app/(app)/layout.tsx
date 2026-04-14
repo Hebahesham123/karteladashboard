@@ -37,11 +37,22 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
         setCurrentUser(user);
         // If sales role, look up their salesperson record
         if (user.role === "sales") {
-          const { data: sp } = await supabase
+          let { data: sp } = await supabase
             .from("salespersons")
             .select("id")
             .eq("user_id", session.user.id)
             .maybeSingle();
+
+          // Auto-link silently on login if this sales account is not linked yet.
+          if (!sp?.id) {
+            await fetch("/api/fix-my-link", { method: "POST", credentials: "include" });
+            const relink = await supabase
+              .from("salespersons")
+              .select("id")
+              .eq("user_id", session.user.id)
+              .maybeSingle();
+            sp = relink.data ?? null;
+          }
           setSalespersonId(sp?.id || null);
         } else {
           setSalespersonId(null);

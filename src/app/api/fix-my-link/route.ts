@@ -29,7 +29,7 @@ export async function POST() {
   // Find the salesperson whose code (lowercased, stripped) matches the email prefix
   const { data: allSps } = await (admin as any)
     .from("salespersons")
-    .select("id, code, user_id");
+    .select("id, code, name, user_id");
 
   const match = (allSps ?? []).find((sp: any) => {
     const derived = sp.code.toLowerCase().replace(/[^a-z0-9]/g, "");
@@ -40,8 +40,13 @@ export async function POST() {
     return NextResponse.json({ error: "No matching salesperson found for this account" }, { status: 404 });
   }
 
+  // If this salesperson is linked to another auth user, re-link it to current user.
+  // This fixes cases where the salesperson was attached to a wrong/old account.
   if (match.user_id && match.user_id !== user.id) {
-    return NextResponse.json({ error: "Salesperson already linked to a different account" }, { status: 409 });
+    await (admin as any)
+      .from("salespersons")
+      .update({ user_id: null })
+      .eq("id", match.id);
   }
 
   // Update user row to ensure role = sales
@@ -49,6 +54,13 @@ export async function POST() {
     { id: user.id, email: user.email, full_name: user.user_metadata?.full_name ?? match.name, role: "sales", is_active: true },
     { onConflict: "id" }
   );
+
+  // Keep a single salesperson per auth user: unlink any other salesperson rows first.
+  await (admin as any)
+    .from("salespersons")
+    .update({ user_id: null })
+    .eq("user_id", user.id)
+    .neq("id", match.id);
 
   // Link
   const { error } = await (admin as any)

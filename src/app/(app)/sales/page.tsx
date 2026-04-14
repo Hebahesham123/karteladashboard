@@ -29,6 +29,7 @@ import { createClient } from "@/lib/supabase/client";
 import { useStore } from "@/store/useStore";
 import { getLevelBadgeColor, getStatusColor, formatNumber } from "@/lib/utils";
 import { ALLOWED_CUSTOMER_TYPES, allowedCustomerTypesList } from "@/lib/customerTypes";
+import { isKartelaProductName } from "@/lib/kartelaProduct";
 import type { ClientStatus, OrderLevel } from "@/types/database";
 
 const MONTHS_AR = ["يناير","فبراير","مارس","أبريل","مايو","يونيو","يوليو","أغسطس","سبتمبر","أكتوبر","نوفمبر","ديسمبر"];
@@ -69,6 +70,11 @@ interface LogEntry {
   user_name: string;
 }
 
+interface KartelaSummary {
+  qty: number;
+  clients: number;
+}
+
 function timeAgo(iso: string, isRTL: boolean): string {
   const diff = (Date.now() - new Date(iso).getTime()) / 1000;
   if (isRTL) {
@@ -104,6 +110,7 @@ export default function SalesPage() {
   // Log cache: clientId → log entries
   const [logCache, setLogCache]           = useState<Record<string, LogEntry[]>>({});
   const [logLoading, setLogLoading]       = useState<Record<string, boolean>>({});
+  const [kartelaSummary, setKartelaSummary] = useState<KartelaSummary>({ qty: 0, clients: 0 });
 
   const fetchClients = useCallback(async () => {
     if (!currentUser) return;
@@ -169,6 +176,43 @@ export default function SalesPage() {
         year:             r.year  ?? year  ?? 0,
       })).sort((a, b) => b.total_meters - a.total_meters)
     );
+
+    // Kartela counters for the summary box:
+    // combine direct order-line detection + monthly metrics fallback to avoid false zeroes.
+    const kartelaClientSet = new Set<string>();
+    let kartelaQty = 0;
+    let fromOrders = 0;
+    const ORDERS_PAGE = 1500;
+    while (true) {
+      let oq = supabase
+        .from("orders")
+        .select("client_id, quantity, products(name)")
+        .range(fromOrders, fromOrders + ORDERS_PAGE - 1);
+      if (year) oq = oq.eq("year", year);
+      if (month) oq = oq.eq("month", month);
+      if (spId) oq = oq.eq("salesperson_id", spId);
+      const { data: oRows, error: oErr } = await oq;
+      if (oErr || !oRows?.length) break;
+      oRows.forEach((r: any) => {
+        const p = Array.isArray(r.products) ? r.products[0]?.name : r.products?.name;
+        const pname = String(p ?? "").trim();
+        if (!pname || !isKartelaProductName(pname)) return;
+        const qty = Number(r.quantity) || 0;
+        if (qty <= 0) return;
+        kartelaQty += qty;
+        if (r.client_id) kartelaClientSet.add(String(r.client_id));
+      });
+      if (oRows.length < ORDERS_PAGE) break;
+      fromOrders += ORDERS_PAGE;
+    }
+    const metricsKartelaQty = Math.round(
+      allRows.reduce((s, r) => s + (Number(r.cartela_count) || 0), 0)
+    );
+    const metricsKartelaClients = allRows.filter((r) => (Number(r.cartela_count) || 0) > 0).length;
+    setKartelaSummary({
+      qty: Math.max(Math.round(kartelaQty), metricsKartelaQty),
+      clients: Math.max(kartelaClientSet.size, metricsKartelaClients),
+    });
     setLoading(false);
   }, [currentUser, filters.selectedMonth, filters.selectedYear, filters.selectedSalesperson, salespersonId]);
 
@@ -443,30 +487,9 @@ export default function SalesPage() {
   const totalMeters  = clients.reduce((s, c) => s + c.total_meters, 0);
   const totalRevenue = clients.reduce((s, c) => s + c.total_revenue, 0);
   const activeCount  = clients.filter(c => c.total_meters > 0).length;
-  const kartelaTotal = clients.reduce((s, c) => s + c.cartela_count, 0);
-  const kartelaClients = clients.filter((c) => c.cartela_count > 0).length;
+  const kartelaTotal = kartelaSummary.qty;
+  const kartelaClients = kartelaSummary.clients;
   const uniqueProducts = new Set(clients.map((c) => c.top_product_name).filter(Boolean)).size;
-
-  const [fixingLink, setFixingLink] = useState(false);
-  const [fixError, setFixError]     = useState("");
-
-  const handleFixLink = async () => {
-    setFixingLink(true);
-    setFixError("");
-    try {
-      const res = await fetch("/api/fix-my-link", { method: "POST" });
-      const data = await res.json();
-      if (!res.ok) {
-        setFixError(data.error ?? (isRTL ? "حدث خطأ" : "An error occurred"));
-      } else {
-        // Reload the page so the layout re-checks the salespersonId
-        window.location.reload();
-      }
-    } catch {
-      setFixError(isRTL ? "حدث خطأ في الاتصال" : "Connection error");
-    }
-    setFixingLink(false);
-  };
 
   if (!loading && currentUser?.role === "sales" && !salespersonId) {
     return (
@@ -475,25 +498,13 @@ export default function SalesPage() {
           <Search className="h-8 w-8 text-amber-600 dark:text-amber-400" />
         </div>
         <div className="space-y-2">
-          <h2 className="text-lg font-semibold">{isRTL ? "الحساب غير مرتبط" : "Account not linked"}</h2>
+          <h2 className="text-lg font-semibold">{isRTL ? "جارٍ تهيئة الحساب..." : "Preparing your account..."}</h2>
           <p className="text-sm text-muted-foreground max-w-sm">
             {isRTL
-              ? "حسابك غير مرتبط بملف مندوب بعد. اضغط الزر لإصلاحه تلقائياً."
-              : "Your account is not linked to a salesperson profile yet. Press the button to fix it automatically."}
+              ? "يتم الربط تلقائياً عند تسجيل الدخول. انتظر لحظة ثم أعد تحميل الصفحة."
+              : "Linking now happens automatically on login. Please wait a moment, then refresh."}
           </p>
         </div>
-        <Button onClick={handleFixLink} disabled={fixingLink} className="gap-2 min-w-[180px]">
-          {fixingLink
-            ? <><RefreshCw className="h-4 w-4 animate-spin" />{isRTL ? "جارٍ الربط..." : "Linking..."}</>
-            : <><RefreshCw className="h-4 w-4" />{isRTL ? "ربط حسابي تلقائياً" : "Auto-link my account"}</>}
-        </Button>
-        {fixError && (
-          <p className="text-sm text-destructive bg-destructive/10 border border-destructive/20 rounded-lg px-4 py-2 max-w-sm">
-            {fixError}
-            <br />
-            <span className="text-xs opacity-70">{isRTL ? "تواصل مع المسؤول." : "Please contact the admin."}</span>
-          </p>
-        )}
       </div>
     );
   }
