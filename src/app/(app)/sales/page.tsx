@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { Fragment, useEffect, useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
 import {
@@ -24,6 +24,7 @@ import { FilterBar } from "@/components/shared/FilterBar";
 import { ClientStatusSelect } from "@/components/clients/ClientStatusSelect";
 import { PageBack } from "@/components/layout/PageBack";
 import { AddNoteDialog } from "@/components/clients/AddNoteDialog";
+import { UrgentOrdersTab } from "@/components/sales/UrgentOrdersTab";
 import { createClient } from "@/lib/supabase/client";
 import { useStore } from "@/store/useStore";
 import { getLevelBadgeColor, getStatusColor, formatNumber } from "@/lib/utils";
@@ -96,6 +97,7 @@ export default function SalesPage() {
   const [dialogType, setDialogType]       = useState<"note" | null>(null);
   const [prodOpen, setProdOpen]           = useState(false);
   const [typeOpen, setTypeOpen]           = useState(false);
+  const [activeTab, setActiveTab]         = useState<"clients" | "urgent">("clients");
 
   // Expand state: clientId → open/closed
   const [expanded, setExpanded]           = useState<Record<string, boolean>>({});
@@ -127,7 +129,7 @@ export default function SalesPage() {
       if (spId)  q = q.eq("salesperson_id", spId);
       const { data, error } = await q;
       if (error || !data?.length) break;
-      allRows = allRows.concat(data);
+      allRows.push(...data);
       if (data.length < PAGE) break;
       from += PAGE;
     }
@@ -168,7 +170,7 @@ export default function SalesPage() {
       })).sort((a, b) => b.total_meters - a.total_meters)
     );
     setLoading(false);
-  }, [currentUser, filters.selectedMonth, filters.selectedYear, salespersonId]);
+  }, [currentUser, filters.selectedMonth, filters.selectedYear, filters.selectedSalesperson, salespersonId]);
 
   useEffect(() => { fetchClients(); }, [fetchClients]);
 
@@ -513,6 +515,30 @@ export default function SalesPage() {
         </Button>
       </div>
 
+      <div className="inline-flex rounded-lg border border-border p-1 bg-muted/30">
+        <Button
+          size="sm"
+          variant={activeTab === "clients" ? "default" : "ghost"}
+          className="h-8"
+          onClick={() => setActiveTab("clients")}
+        >
+          {isRTL ? "عملائي" : "My Clients"}
+        </Button>
+        <Button
+          size="sm"
+          variant={activeTab === "urgent" ? "default" : "ghost"}
+          className="h-8"
+          onClick={() => setActiveTab("urgent")}
+        >
+          {isRTL ? "الطلبات العاجلة" : "Urgent Orders"}
+        </Button>
+      </div>
+
+      {activeTab === "urgent" && <UrgentOrdersTab locale={locale} />}
+
+      {activeTab === "clients" && (
+        <>
+
       {/* Quick stats */}
       {!loading && clients.length > 0 && (
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
@@ -616,7 +642,132 @@ export default function SalesPage() {
       {/* Table */}
       <Card className="overflow-hidden">
         <CardContent className="p-0">
-          <div className="overflow-x-auto">
+          <div className="md:hidden">
+            {loading ? (
+              <div className="space-y-2 p-3">
+                {Array(6).fill(0).map((_, i) => (
+                  <div key={i} className="h-24 bg-muted animate-pulse rounded-lg" />
+                ))}
+              </div>
+            ) : table.getRowModel().rows.length === 0 ? (
+              <div className="text-center py-12 text-muted-foreground text-sm">
+                {isRTL ? "لا توجد بيانات" : "No clients found"}
+              </div>
+            ) : (
+              <div className="space-y-2 p-2">
+                {table.getRowModel().rows.map((row) => {
+                  const isOpen = expanded[row.original.id];
+                  const logs = logCache[row.original.id] ?? [];
+                  const isLoadingLog = logLoading[row.original.id];
+                  return (
+                    <div key={row.id} className="rounded-xl border border-border bg-card overflow-hidden">
+                      <button
+                        type="button"
+                        onClick={() => toggleExpand(row.original.id)}
+                        className="w-full p-3 text-start"
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="min-w-0">
+                            <p className="font-semibold text-sm truncate">{row.original.name}</p>
+                            <p className="text-[11px] text-muted-foreground font-mono">{row.original.partner_id}</p>
+                          </div>
+                          <div className="text-end shrink-0">
+                            <p className="text-sm font-bold tabular-nums">{formatNumber(row.original.total_meters)}m</p>
+                            <p className="text-[11px] text-muted-foreground">{row.original.customer_type ?? "—"}</p>
+                          </div>
+                        </div>
+                        <div className="mt-2 flex items-center justify-between text-xs text-muted-foreground">
+                          <span>{row.original.top_product_name ?? "—"}</span>
+                          <span>{isOpen ? (isRTL ? "إخفاء" : "Hide") : (isRTL ? "تفاصيل" : "Details")}</span>
+                        </div>
+                      </button>
+
+                      {isOpen && (
+                        <div className="border-t border-border bg-muted/20 p-3 space-y-3">
+                          <div className="flex items-center justify-between text-xs">
+                            <span className="text-muted-foreground">{isRTL ? "الحالة" : "Status"}</span>
+                            <ClientStatusSelect
+                              compact
+                              clientId={row.original.id}
+                              clientName={row.original.name}
+                              currentStatus={row.original.current_status}
+                              locale={locale}
+                              onUpdated={(newStatus) => {
+                                setClients((prev) =>
+                                  prev.map((c) => (c.id === row.original.id ? { ...c, current_status: newStatus } : c))
+                                );
+                                setLogCache((p) => {
+                                  const n = { ...p };
+                                  delete n[row.original.id];
+                                  return n;
+                                });
+                                fetchClients();
+                              }}
+                            />
+                          </div>
+
+                          <div className="flex items-center justify-between text-xs">
+                            <span className="text-muted-foreground">{isRTL ? "المستوى" : "Level"}</span>
+                            <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-semibold border whitespace-nowrap ${getLevelBadgeColor(row.original.level)}`}>
+                              <span className="h-1.5 w-1.5 rounded-full bg-current shrink-0" />
+                              {LEVEL_LABELS[row.original.level]}
+                            </span>
+                          </div>
+
+                          {row.original.notes && (
+                            <div className="text-xs rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/30 px-3 py-2 text-foreground">
+                              {row.original.notes}
+                            </div>
+                          )}
+
+                          <div className="flex gap-2">
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="h-8 text-xs"
+                              onClick={() => { setSelectedClient(row.original); setDialogType("note"); }}
+                            >
+                              {isRTL ? "ملاحظة" : "Note"}
+                            </Button>
+                          </div>
+
+                          <div className="pt-1">
+                            {isLoadingLog ? (
+                              <div className="space-y-2">
+                                {Array(2).fill(0).map((_, k) => (
+                                  <div key={k} className="h-8 bg-muted rounded animate-pulse" />
+                                ))}
+                              </div>
+                            ) : logs.length === 0 ? (
+                              <p className="text-[11px] text-muted-foreground">
+                                {isRTL ? "لا توجد سجلات بعد" : "No activity logged yet"}
+                              </p>
+                            ) : (
+                              <div className="space-y-1.5">
+                                {logs.slice(0, 4).map((log) => (
+                                  <div key={log.id} className="text-[11px] rounded-md border border-border bg-background px-2 py-1.5">
+                                    <div className="flex items-center justify-between gap-2">
+                                      <span className="font-medium truncate">{log.user_name}</span>
+                                      <span className="text-muted-foreground shrink-0">{timeAgo(log.created_at, isRTL)}</span>
+                                    </div>
+                                    {log.activity_type === "NOTE_ADDED" && log.metadata?.note && (
+                                      <p className="mt-1 text-foreground line-clamp-2">{log.metadata.note}</p>
+                                    )}
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          <div className="hidden md:block overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
                 {table.getHeaderGroups().map((hg) => (
@@ -658,12 +809,8 @@ export default function SalesPage() {
                     const isLoadingLog = logLoading[row.original.id];
 
                     return (
-                      <>
-                        <motion.tr
-                          key={row.id}
-                          initial={{ opacity: 0 }}
-                          animate={{ opacity: 1 }}
-                          transition={{ delay: Math.min(i * 0.006, 0.12) }}
+                      <Fragment key={row.id}>
+                        <tr
                           className={`border-b border-border/50 transition-colors ${isOpen ? "bg-primary/5" : i % 2 === 1 ? "bg-muted/10 hover:bg-muted/30" : "hover:bg-muted/30"}`}
                         >
                           {row.getVisibleCells().map((cell) => (
@@ -671,7 +818,7 @@ export default function SalesPage() {
                               {flexRender(cell.column.columnDef.cell, cell.getContext())}
                             </td>
                           ))}
-                        </motion.tr>
+                        </tr>
 
                         {/* Expandable log panel */}
                         <AnimatePresence>
@@ -771,7 +918,7 @@ export default function SalesPage() {
                             </motion.tr>
                           )}
                         </AnimatePresence>
-                      </>
+                      </Fragment>
                     );
                   })
                 )}
@@ -822,6 +969,8 @@ export default function SalesPage() {
             setDialogType(null);
           }}
         />
+      )}
+        </>
       )}
     </div>
   );

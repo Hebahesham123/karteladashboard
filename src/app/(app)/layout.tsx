@@ -51,7 +51,22 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
     };
 
     checkAuth();
-  }, [router, setCurrentUser]);
+  }, [router, setCurrentUser, setSalespersonId]);
+
+  useEffect(() => {
+    if (!currentUser) return;
+    const now = new Date();
+    const month = now.getMonth() === 0 ? 12 : now.getMonth();
+    const year = now.getMonth() === 0 ? now.getFullYear() - 1 : now.getFullYear();
+
+    // Warm up common API responses so screens feel instant on first open.
+    void fetch(`/api/order-distinct-filters?month=${month}&year=${year}`, { credentials: "include" });
+    if (currentUser.role === "admin") {
+      void fetch(`/api/urgent-orders/admin?salespersonId=__init__&month=${month}&year=${year}`, { credentials: "include" });
+    } else if (currentUser.role === "sales") {
+      void fetch("/api/urgent-orders/my", { credentials: "include" });
+    }
+  }, [currentUser]);
 
   const handleLocaleChange = (newLocale: string) => {
     setLocale(newLocale);

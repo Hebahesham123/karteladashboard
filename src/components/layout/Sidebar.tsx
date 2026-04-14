@@ -1,7 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { useEffect, useMemo } from "react";
+import { usePathname, useRouter } from "next/navigation";
 import { motion } from "framer-motion";
 import {
   LayoutDashboard,
@@ -13,6 +14,7 @@ import {
   ChevronRight,
   Layers,
   UserSearch,
+  Siren,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -44,6 +46,7 @@ const navItems: NavItem[] = [
     role: "sales",
   },
   { labelEn: "Clients", labelAr: "العملاء", href: "/clients", icon: Users, role: "admin" },
+  { labelEn: "Urgent Orders", labelAr: "الطلبات العاجلة", href: "/urgent-orders", icon: Siren, role: "admin" },
   { labelEn: "Admin", labelAr: "الإدارة", href: "/admin", icon: Settings, role: "admin" },
 ];
 
@@ -58,9 +61,19 @@ interface SidebarProps {
 
 export function Sidebar({ role, isCollapsed, onToggle, onSignOut, locale, onNavigate }: SidebarProps) {
   const pathname = usePathname();
+  const router = useRouter();
   const isRTL = locale === "ar";
 
-  const filteredItems = navItems.filter((item) => item.role === "all" || item.role === role);
+  const filteredItems = useMemo(
+    () => navItems.filter((item) => item.role === "all" || item.role === role),
+    [role]
+  );
+
+  useEffect(() => {
+    filteredItems.forEach((item) => {
+      router.prefetch(item.href);
+    });
+  }, [filteredItems, router]);
 
   return (
     <aside
@@ -123,6 +136,7 @@ export function Sidebar({ role, isCollapsed, onToggle, onSignOut, locale, onNavi
                 <Link
                   href={item.href}
                   onClick={() => onNavigate?.()}
+                  onMouseEnter={() => router.prefetch(item.href)}
                   className={cn(
                     "flex items-center gap-3 rounded-xl px-3 py-2 md:py-2.5 text-sm font-medium transition-all duration-200",
                     isActive

@@ -144,6 +144,20 @@ export interface Database {
         Insert: Omit<Database["public"]["Tables"]["activity_logs"]["Row"], "id" | "created_at">;
         Update: Partial<Database["public"]["Tables"]["activity_logs"]["Insert"]>;
       };
+      urgent_order_assignments: {
+        Row: {
+          id: string;
+          order_id: string;
+          salesperson_id: string;
+          assigned_by: string;
+          note: string | null;
+          is_active: boolean;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: Omit<Database["public"]["Tables"]["urgent_order_assignments"]["Row"], "id" | "created_at" | "updated_at">;
+        Update: Partial<Database["public"]["Tables"]["urgent_order_assignments"]["Insert"]>;
+      };
     };
     Views: {
       client_monthly_metrics: {
@@ -206,6 +220,7 @@ export type Order = Database["public"]["Tables"]["orders"]["Row"];
 export type UploadBatch = Database["public"]["Tables"]["upload_batches"]["Row"];
 export type ClientStatusHistory = Database["public"]["Tables"]["client_status_history"]["Row"];
 export type ActivityLog = Database["public"]["Tables"]["activity_logs"]["Row"];
+export type UrgentOrderAssignment = Database["public"]["Tables"]["urgent_order_assignments"]["Row"];
 export type ClientMonthlyMetrics = Database["public"]["Views"]["client_monthly_metrics"]["Row"];
 export type ProductAnalytics = Database["public"]["Views"]["product_analytics"]["Row"];
 export type SalespersonPerformance = Database["public"]["Views"]["salesperson_performance"]["Row"];

@@ -29,6 +29,7 @@ import {
   MessageSquare,
   StickyNote,
   ArrowRight,
+  Expand,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -161,6 +162,7 @@ export default function ClientsPage() {
     }
 
     // ── Fast boot cache (page reload) ────────────────────────────────────
+    let hasBootData = false;
     if (!forceRefresh && typeof window !== "undefined") {
       try {
         const raw = window.sessionStorage.getItem(persistKey);
@@ -169,6 +171,7 @@ export default function ClientsPage() {
           if (Array.isArray(persisted) && persisted.length > 0) {
             setClients(persisted.map((c) => withOrderImportFields(c as ClientRow)));
             setLoading(false);
+            hasBootData = true;
           }
         }
       } catch {
@@ -176,7 +179,7 @@ export default function ClientsPage() {
       }
     }
 
-    setLoading(true);
+    if (!hasBootData) setLoading(true);
     try {
       const PAGE_SIZE = 1000;
 
@@ -627,7 +630,25 @@ export default function ClientsPage() {
       cell: ({ getValue }) => {
         const v = getValue() as string | null;
         if (!v) return <span className="text-muted-foreground text-xs">—</span>;
-        return <span className="text-xs font-mono max-w-[180px] truncate" title={v}>{v}</span>;
+        return (
+          <Popover>
+            <PopoverTrigger asChild>
+              <button
+                type="button"
+                className="inline-flex max-w-[120px] items-center gap-1 rounded px-1 py-0.5 text-xs font-mono text-start hover:bg-muted/60"
+                title={isRTL ? "اضغط لعرض كامل النص" : "Click to show full text"}
+                onClick={(e) => e.stopPropagation()}
+                onPointerDown={(e) => e.stopPropagation()}
+              >
+                <span className="truncate">{v}</span>
+                <Expand className="h-3 w-3 shrink-0 opacity-60" />
+              </button>
+            </PopoverTrigger>
+            <PopoverContent align="start" className="max-w-[420px]">
+              <p className="text-xs font-mono break-words leading-6">{v}</p>
+            </PopoverContent>
+          </Popover>
+        );
       },
     },
     // ── Meters ────────────────────────────────────────────────────────
@@ -1262,14 +1283,14 @@ export default function ClientsPage() {
 
           {/* Table */}
           <div className="overflow-x-auto">
-            <table className="w-full">
+            <table className="w-full border-separate border-spacing-0 border border-border/80 rounded-lg overflow-hidden">
               <thead>
                 {table.getHeaderGroups().map((headerGroup) => (
-                  <tr key={headerGroup.id} className="border-b border-border bg-muted/30">
+                  <tr key={headerGroup.id} className="bg-muted/40">
                     {headerGroup.headers.map((header) => (
                       <th
                         key={header.id}
-                        className="px-4 py-3 text-start text-xs font-semibold text-muted-foreground uppercase tracking-wider"
+                        className="px-4 py-3 text-start text-xs font-semibold text-muted-foreground uppercase tracking-wider border-b border-border/80 border-e border-border/70 last:border-e-0"
                       >
                         {header.isPlaceholder ? null : (
                           <div
@@ -1319,12 +1340,12 @@ export default function ClientsPage() {
                         key={row.id}
                         initial={{ opacity: 0 }}
                         animate={{ opacity: 1 }}
-                        transition={{ delay: i * 0.02 }}
-                        className={`border-b border-border/50 hover:bg-muted/30 transition-colors cursor-pointer ${expanded[row.original.id] ? "bg-muted/20" : ""}`}
+                        transition={{ duration: 0.12 }}
+                        className={`cursor-pointer transition-colors ${expanded[row.original.id] ? "bg-muted/25" : i % 2 === 0 ? "bg-background" : "bg-muted/10"} hover:bg-muted/30`}
                         onClick={() => toggleExpand(row.original.id)}
                       >
                         {row.getVisibleCells().map((cell) => (
-                          <td key={cell.id} className="px-4 py-3" onClick={cell.column.id === "select" ? (e) => e.stopPropagation() : undefined}>
+                          <td key={cell.id} className="px-4 py-3 border-b border-border/80 border-e border-border/70 last:border-e-0 align-top" onClick={cell.column.id === "select" ? (e) => e.stopPropagation() : undefined}>
                             {flexRender(cell.column.columnDef.cell, cell.getContext())}
                           </td>
                         ))}

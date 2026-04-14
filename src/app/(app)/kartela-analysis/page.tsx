@@ -58,6 +58,8 @@ interface FamilyRow {
   clients: ClientAgg[];
 }
 
+const KARTELA_CACHE_PREFIX = "kartela_analysis_v1:";
+
 function parseMeterBreakdown(raw: unknown): MeterBreakdownLine[] {
   if (!raw || !Array.isArray(raw)) return [];
   return raw
@@ -134,6 +136,7 @@ export default function KartelaAnalysisPage() {
   const [expanded, setExpanded] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [productNameById, setProductNameById] = useState<Map<string, string>>(new Map());
+  const [isRefreshing, setIsRefreshing] = useState(false);
 
   const month = filters.selectedMonth;
   const year = filters.selectedYear;
@@ -154,7 +157,37 @@ export default function KartelaAnalysisPage() {
       return;
     }
 
-    setLoading(true);
+    const selectedClientIds = filters.selectedClients?.length
+      ? filters.selectedClients
+      : (filters.selectedClient ? [filters.selectedClient] : []);
+    const selectedProductIds = filters.selectedProducts?.length
+      ? filters.selectedProducts
+      : (filters.selectedProduct ? [filters.selectedProduct] : []);
+    const cacheKey = `${KARTELA_CACHE_PREFIX}${month}:${year}:${selectedSpIds.slice().sort().join(",")}:${selectedClientIds.slice().sort().join(",")}:${selectedProductIds.slice().sort().join(",")}`;
+
+    let hydratedFromCache = false;
+    if (typeof window !== "undefined") {
+      try {
+        const raw = window.sessionStorage.getItem(cacheKey);
+        if (raw) {
+          const cached = JSON.parse(raw) as {
+            families: FamilyRow[];
+            products: [string, string][];
+          };
+          if (Array.isArray(cached?.families) && Array.isArray(cached?.products)) {
+            setFamilies(cached.families);
+            setProductNameById(new Map(cached.products));
+            setLoading(false);
+            hydratedFromCache = true;
+          }
+        }
+      } catch {
+        // Ignore invalid cache payload.
+      }
+    }
+
+    if (hydratedFromCache) setIsRefreshing(true);
+    else setLoading(true);
     setError(null);
     const supabase = createClient();
 
@@ -170,14 +203,15 @@ export default function KartelaAnalysisPage() {
       const { data: clientRows, error: clientErr } = await clientQuery;
       if (clientErr) throw new Error(clientErr.message);
 
-      const { data: spRows } = await supabase.from("salespersons").select("id, name");
-      const { data: productRows } = await supabase.from("products").select("id, name");
+      const [{ data: spRows }, { data: productRows }] = await Promise.all([
+        supabase.from("salespersons").select("id, name"),
+        supabase.from("products").select("id, name"),
+      ]);
       const spNameById = new Map<string, string>(
         (spRows ?? []).map((s: any) => [s.id as string, String(s.name ?? "")])
       );
-      setProductNameById(
-        new Map((productRows ?? []).map((p: any) => [p.id as string, String(p.name ?? "")]))
-      );
+      const productNameMap = new Map((productRows ?? []).map((p: any) => [p.id as string, String(p.name ?? "")]));
+      setProductNameById(productNameMap);
 
       const clientMap = new Map(
         (clientRows ?? []).map((c: any) => {
@@ -196,20 +230,14 @@ export default function KartelaAnalysisPage() {
       );
 
       const allowedIds = Array.from(clientMap.keys());
-      const selectedClientIds = filters.selectedClients?.length
-        ? filters.selectedClients
-        : (filters.selectedClient ? [filters.selectedClient] : []);
       const scopedAllowedIds = selectedClientIds.length > 0
         ? allowedIds.filter((id) => selectedClientIds.includes(id))
         : allowedIds;
 
-      const selectedProductIds = filters.selectedProducts?.length
-        ? filters.selectedProducts
-        : (filters.selectedProduct ? [filters.selectedProduct] : []);
       const selectedBaseSet = selectedProductIds.length > 0
         ? new Set(
             selectedProductIds
-              .map((id) => productRows?.find((p: any) => p.id === id)?.name as string | undefined)
+              .map((id) => productNameMap.get(id))
               .filter(Boolean)
               .map((name) => kartelaFamilyBaseKey(name!))
           )
@@ -222,22 +250,30 @@ export default function KartelaAnalysisPage() {
       }
 
       const orderRows: any[] = [];
-      const CHUNK = 100;
+      const CHUNK = 120;
+      const PARALLEL_BATCH = 6;
+      const chunks: string[][] = [];
       for (let i = 0; i < scopedAllowedIds.length; i += CHUNK) {
-        const chunk = scopedAllowedIds.slice(i, i + CHUNK);
-        // Scope by client's assigned rep only — do not filter orders.salesperson_id.
-        // Invoice lines may list a different rep than the client's owner; those rows must still appear.
-        const q = supabase
-          .from("orders")
-          .select(
-            "client_id, quantity, invoice_total, salesperson_id, meter_breakdown, category, invoice_ref, products(name)"
+        chunks.push(scopedAllowedIds.slice(i, i + CHUNK));
+      }
+      for (let i = 0; i < chunks.length; i += PARALLEL_BATCH) {
+        const batch = chunks.slice(i, i + PARALLEL_BATCH);
+        const results = await Promise.all(
+          batch.map((chunk) =>
+            supabase
+              .from("orders")
+              .select(
+                "client_id, quantity, invoice_total, salesperson_id, meter_breakdown, category, invoice_ref, products(name)"
+              )
+              .eq("month", month)
+              .eq("year", year)
+              .in("client_id", chunk)
           )
-          .eq("month", month)
-          .eq("year", year)
-          .in("client_id", chunk);
-        const { data, error: oe } = await q;
-        if (oe) throw new Error(oe.message);
-        orderRows.push(...(data ?? []));
+        );
+        results.forEach(({ data, error: oe }) => {
+          if (oe) throw new Error(oe.message);
+          orderRows.push(...(data ?? []));
+        });
       }
 
       const byFamily = new Map<string, Map<string, ClientAgg>>();
@@ -375,15 +411,29 @@ export default function KartelaAnalysisPage() {
         return a.baseName.localeCompare(b.baseName, undefined, { sensitivity: "base" });
       });
       setFamilies(out);
+      if (typeof window !== "undefined") {
+        try {
+          window.sessionStorage.setItem(
+            cacheKey,
+            JSON.stringify({
+              families: out,
+              products: Array.from(productNameMap.entries()),
+            })
+          );
+        } catch {
+          // Ignore session storage errors.
+        }
+      }
     } catch (e: any) {
       console.error(e);
       setError(e?.message ?? (isRTL ? "تعذر التحميل" : "Failed to load"));
       setFamilies([]);
     } finally {
       setLoading(false);
+      setIsRefreshing(false);
     }
   }, [
-    currentUser, salespersonId, selectedSpIds, month, year,
+    currentUser, salespersonId, selectedSpIds, month, year, isRTL,
     filters.selectedClient, filters.selectedClients, filters.selectedProduct, filters.selectedProducts,
   ]);
 
@@ -434,14 +484,6 @@ export default function KartelaAnalysisPage() {
     pricelistCol: isRTL ? "قائمة الأسعار" : "Pricelist",
   };
 
-  if (currentUser && currentUser.role !== "admin" && currentUser.role !== "sales") {
-    return (
-      <div className="flex flex-col items-center justify-center min-h-[40vh] text-muted-foreground">
-        {t.access}
-      </div>
-    );
-  }
-
   const selectedProductBase = useMemo(() => {
     const selectedProducts = filters.selectedProducts ?? [];
     const ids = selectedProducts.length > 0
@@ -458,14 +500,15 @@ export default function KartelaAnalysisPage() {
 
   const visibleFamilies = useMemo(() => {
     const selectedClients = filters.selectedClients ?? [];
+    const selectedClientIds = selectedClients.length > 0
+      ? selectedClients
+      : (filters.selectedClient ? [filters.selectedClient] : []);
+    const selectedClientSet = selectedClientIds.length > 0 ? new Set(selectedClientIds) : null;
     return families
       .filter((f) => (selectedProductBase ? selectedProductBase.has(f.baseName) : true))
       .map((f) => {
         const filteredClients = f.clients.filter((c) => {
-          const selectedClientIds = selectedClients.length > 0
-            ? selectedClients
-            : (filters.selectedClient ? [filters.selectedClient] : []);
-          if (selectedClientIds.length > 0 && !selectedClientIds.includes(c.clientId)) return false;
+          if (selectedClientSet && !selectedClientSet.has(c.clientId)) return false;
           return c.meterQty > 0 || c.kartelaQty > 0;
         });
         if (filteredClients.length === 0) return null;
@@ -481,6 +524,14 @@ export default function KartelaAnalysisPage() {
       })
       .filter((f): f is FamilyRow => Boolean(f));
   }, [families, selectedProductBase, filters.selectedClient, filters.selectedClients]);
+
+  if (currentUser && currentUser.role !== "admin" && currentUser.role !== "sales") {
+    return (
+      <div className="flex flex-col items-center justify-center min-h-[40vh] text-muted-foreground">
+        {t.access}
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-5">
@@ -500,6 +551,11 @@ export default function KartelaAnalysisPage() {
           {t.refresh}
         </Button>
       </div>
+      {isRefreshing && (
+        <p className="text-xs text-muted-foreground">
+          {isRTL ? "يتم تحديث البيانات في الخلفية..." : "Refreshing data in background..."}
+        </p>
+      )}
 
       <FilterBar
         locale={locale}

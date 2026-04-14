@@ -85,6 +85,7 @@ export default function AdminPage() {
         <TabsContent value="sales-accounts" className="mt-6">
           <SalesAccountsManager locale={locale} />
         </TabsContent>
+
       </Tabs>
     </div>
   );

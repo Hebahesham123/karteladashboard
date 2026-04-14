@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Loader2, RefreshCw, Search } from "lucide-react";
+import { Check, ChevronsUpDown, Loader2, RefreshCw, Search } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { useStore } from "@/store/useStore";
 import { ALLOWED_CUSTOMER_TYPES } from "@/lib/customerTypes";
@@ -12,14 +12,10 @@ import { FilterBar } from "@/components/shared/FilterBar";
 import { PageBack } from "@/components/layout/PageBack";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { Input } from "@/components/ui/input";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { cn } from "@/lib/utils";
 interface MatchRow {
   clientId: string;
   name: string;
@@ -36,11 +32,12 @@ interface MatchRow {
 
 const CAT_PLACEHOLDER = "__pick_category__";
 const PL_ANY = "__any_pricelist__";
+const DEFAULT_PRICE_RANGE = 20;
 
-function unitPriceMatchesTarget(unitPrice: number, target: number): boolean {
+function unitPriceMatchesTarget(unitPrice: number, target: number, range: number): boolean {
   const u = Math.round(unitPrice * 100) / 100;
   const t = Math.round(target * 100) / 100;
-  return Math.abs(u - t) < 0.001;
+  return Math.abs(u - t) <= range;
 }
 
 function productNameFromRow(row: { products?: { name?: string } | null }): string | null {
@@ -60,6 +57,9 @@ export default function ClientsByCategoryPricePage() {
   const [selectedPricelist, setSelectedPricelist] = useState<string>(PL_ANY);
   const [pricelistOptions, setPricelistOptions] = useState<string[]>([]);
   const [priceInput, setPriceInput] = useState("");
+  const [priceRangeInput, setPriceRangeInput] = useState(String(DEFAULT_PRICE_RANGE));
+  const [categoryOpen, setCategoryOpen] = useState(false);
+  const [pricelistOpen, setPricelistOpen] = useState(false);
   const [matches, setMatches] = useState<MatchRow[]>([]);
   const [loading, setLoading] = useState(false);
   const [loadingCategories, setLoadingCategories] = useState(false);
@@ -86,6 +86,36 @@ export default function ClientsByCategoryPricePage() {
     setDistinctLoadError(null);
     const m = filters.selectedMonth ?? new Date().getMonth() + 1;
     const y = filters.selectedYear ?? new Date().getFullYear();
+    const directDistinctFromOrders = async () => {
+      const supabase = createClient();
+      const catSet = new Set<string>();
+      const plSet = new Set<string>();
+      let from = 0;
+      const PAGE = 1000;
+      for (;;) {
+        let q = supabase
+          .from("orders")
+          .select("category, pricelist")
+          .eq("month", m)
+          .eq("year", y)
+          .order("id", { ascending: true })
+          .range(from, from + PAGE - 1);
+        if (selectedSpIds.length === 1) q = q.eq("salesperson_id", selectedSpIds[0]);
+        else if (selectedSpIds.length > 1) q = q.in("salesperson_id", selectedSpIds);
+
+        const { data, error } = await q;
+        if (error || !data?.length) break;
+        for (const r of data as { category?: string | null; pricelist?: string | null }[]) {
+          const c = String(r.category ?? "").trim();
+          if (c) catSet.add(c);
+          const p = String(r.pricelist ?? "").trim();
+          if (p) plSet.add(p);
+        }
+        if (data.length < PAGE) break;
+        from += PAGE;
+      }
+      return { categories: Array.from(catSet), pricelists: Array.from(plSet) };
+    };
     try {
       const res = await fetch(`/api/order-distinct-filters?month=${m}&year=${y}`, { credentials: "include" });
       const json = (await res.json()) as {
@@ -99,13 +129,42 @@ export default function ClientsByCategoryPricePage() {
         const supabase = createClient();
         const fb = await fetchDistinctCategoriesAndPricelists(supabase, { month: m, year: y, maxPages: 500 });
         if (fb.error) setDistinctLoadError(`${msg} · ${fb.error}`);
-        setCategoryOptions(fb.categories);
-        setPricelistOptions(fb.pricelists);
+        if (fb.categories.length || fb.pricelists.length) {
+          setCategoryOptions(fb.categories);
+          setPricelistOptions(fb.pricelists);
+          return;
+        }
+        const direct = await directDistinctFromOrders();
+        setCategoryOptions(direct.categories);
+        setPricelistOptions(direct.pricelists);
         return;
       }
       if (json.error) setDistinctLoadError(json.error);
-      setCategoryOptions(json.categories ?? []);
-      setPricelistOptions(json.pricelists ?? []);
+      const apiCats = json.categories ?? [];
+      const apiPls = json.pricelists ?? [];
+
+      // Guard against stale/empty API responses: verify once directly from DB.
+      if (apiCats.length === 0 && apiPls.length === 0) {
+        const supabase = createClient();
+        const fb = await fetchDistinctCategoriesAndPricelists(supabase, { month: m, year: y, maxPages: 500 });
+        if (fb.categories.length > 0 || fb.pricelists.length > 0) {
+          setCategoryOptions(fb.categories);
+          setPricelistOptions(fb.pricelists);
+          setDistinctLoadError(fb.error ?? null);
+          return;
+        }
+        if (fb.error) setDistinctLoadError(fb.error);
+        const direct = await directDistinctFromOrders();
+        if (direct.categories.length > 0 || direct.pricelists.length > 0) {
+          setCategoryOptions(direct.categories);
+          setPricelistOptions(direct.pricelists);
+          setDistinctLoadError(null);
+          return;
+        }
+      }
+
+      setCategoryOptions(apiCats);
+      setPricelistOptions(apiPls);
     } catch (err) {
       const base = err instanceof Error ? err.message : "Failed to load";
       setDistinctLoadError(base);
@@ -122,7 +181,7 @@ export default function ClientsByCategoryPricePage() {
     } finally {
       if (showLoading) setLoadingCategories(false);
     }
-  }, [currentUser, filters.selectedMonth, filters.selectedYear]);
+  }, [currentUser, filters.selectedMonth, filters.selectedYear, selectedSpIds]);
 
   useEffect(() => {
     void loadCategories({ showLoading: false });
@@ -145,6 +204,7 @@ export default function ClientsByCategoryPricePage() {
 
     const priceTrim = priceInput.trim();
     let targetPrice: number | null = null;
+    let priceRange = DEFAULT_PRICE_RANGE;
     if (priceTrim !== "") {
       const n = Number(priceTrim.replace(/,/g, "."));
       if (Number.isNaN(n) || n < 0) {
@@ -152,6 +212,12 @@ export default function ClientsByCategoryPricePage() {
         return;
       }
       targetPrice = n;
+      const r = Number(priceRangeInput.trim().replace(/,/g, "."));
+      if (Number.isNaN(r) || r < 0) {
+        setError(isRTL ? "مدى السعر غير صالح" : "Invalid price range");
+        return;
+      }
+      priceRange = r;
     }
 
     setLoading(true);
@@ -237,7 +303,7 @@ export default function ClientsByCategoryPricePage() {
           if (op !== plNorm) continue;
         }
         const unitPrice = inv / qty;
-        if (targetPrice != null && !unitPriceMatchesTarget(unitPrice, targetPrice)) continue;
+        if (targetPrice != null && !unitPriceMatchesTarget(unitPrice, targetPrice, priceRange)) continue;
 
         const cid = row.client_id as string;
         const c = clientMap.get(cid);
@@ -281,6 +347,7 @@ export default function ClientsByCategoryPricePage() {
     selectedCategory,
     selectedPricelist,
     priceInput,
+    priceRangeInput,
     filters.selectedClient,
     filters.selectedClients,
     isRTL,
@@ -312,13 +379,17 @@ export default function ClientsByCategoryPricePage() {
     pricelist: isRTL ? "قائمة الأسعار" : "Pricelist",
     pricelistHint: isRTL ? "اختياري — «الكل» لجميع قوائم الأسعار" : "Optional — “All” includes every pricelist",
     price: isRTL ? "السعر" : "Price",
-    priceHint: isRTL ? "سعر المتر بالجنيه — اختياري" : "EGP per meter — optional",
+    priceRange: isRTL ? "مدى السعر ±" : "Price range ±",
+    priceHint: isRTL ? "سعر المتر بالجنيه — اختياري، مع نطاق ±" : "EGP per meter — optional, matched within ± range",
+    searchCategory: isRTL ? "ابحث عن تصنيف..." : "Search category...",
+    searchPricelist: isRTL ? "ابحث عن قائمة أسعار..." : "Search pricelist...",
+    noResults: isRTL ? "لا توجد نتائج" : "No results found",
     empty: isRTL ? "لا توجد نتائج لهذه المعايير" : "No matching orders",
     access: isRTL ? "غير مصرح" : "Access denied",
     period: isRTL ? "الفترة" : "Period",
     distinctEmptyHint: isRTL
-      ? "لا توجد تصنيفات لهذا الشهر — تأكد أن شهر/سنة الفلتر يطابقان استيراد Excel، وأن أعمدة التصنيف وقائمة الأسعار مملوءة. على الخادم يلزم SUPABASE_SERVICE_ROLE_KEY حتى تُحمَّل القوائم كاملة."
-      : "No categories for this month — match the filter month/year to your import, and ensure category & pricelist columns are filled. Set SUPABASE_SERVICE_ROLE_KEY on the server so lists load with full data.",
+      ? "لا توجد تصنيفات متاحة حالياً لهذا الشهر. اضغط «تحديث الاقتراحات» أو غيّر الشهر/السنة لتظهر القيم."
+      : "No categories available for this month right now. Press Refresh suggestions or change month/year.",
     loadListsFailed: isRTL ? "تعذر تحميل القوائم:" : "Could not load lists:",
   };
 
@@ -379,49 +450,101 @@ export default function ClientsByCategoryPricePage() {
               <span className="font-mono text-xs break-all">{distinctLoadError}</span>
             </p>
           )}
-          {!distinctLoadError && !loadingCategories && categoryOptions.length === 0 && pricelistOptions.length === 0 && (
-            <p className="text-sm text-amber-800 dark:text-amber-200 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 rounded-lg px-3 py-2">
-              {t.distinctEmptyHint}
-            </p>
-          )}
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 items-end">
             <div className="space-y-2">
               <label className="text-sm font-medium">{t.category}</label>
-              <Select value={selectedCategory} onValueChange={setSelectedCategory} dir={isRTL ? "rtl" : "ltr"}>
-                <SelectTrigger className="w-full">
-                  <SelectValue placeholder={isRTL ? "اختر التصنيف" : "Select category"} />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value={CAT_PLACEHOLDER}>
-                    {isRTL ? "— اختر التصنيف —" : "— Select category —"}
-                  </SelectItem>
-                  {categoryOptions.map((c) => (
-                    <SelectItem key={c} value={c}>
-                      {c}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <Popover open={categoryOpen} onOpenChange={setCategoryOpen}>
+                <PopoverTrigger asChild>
+                  <Button variant="outline" role="combobox" aria-expanded={categoryOpen} className="w-full justify-between font-normal">
+                    <span className="truncate">
+                      {selectedCategory === CAT_PLACEHOLDER ? (isRTL ? "— اختر التصنيف —" : "— Select category —") : selectedCategory}
+                    </span>
+                    <ChevronsUpDown className="ms-2 h-4 w-4 shrink-0 opacity-50" />
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent className="w-[min(100vw-2rem,28rem)] p-0" align="start">
+                  <Command>
+                    <CommandInput placeholder={t.searchCategory} className="h-9" />
+                    <CommandList>
+                      <CommandEmpty>{t.noResults}</CommandEmpty>
+                      <CommandGroup>
+                        <CommandItem
+                          value="__pick_category__"
+                          onSelect={() => {
+                            setSelectedCategory(CAT_PLACEHOLDER);
+                            setCategoryOpen(false);
+                          }}
+                        >
+                          <Check className={cn("me-2 h-4 w-4", selectedCategory === CAT_PLACEHOLDER ? "opacity-100" : "opacity-0")} />
+                          {isRTL ? "— اختر التصنيف —" : "— Select category —"}
+                        </CommandItem>
+                        {categoryOptions.map((c) => (
+                          <CommandItem
+                            key={c}
+                            value={c}
+                            onSelect={() => {
+                              setSelectedCategory(c);
+                              setCategoryOpen(false);
+                            }}
+                          >
+                            <Check className={cn("me-2 h-4 w-4", selectedCategory === c ? "opacity-100" : "opacity-0")} />
+                            <span className="truncate">{c}</span>
+                          </CommandItem>
+                        ))}
+                      </CommandGroup>
+                    </CommandList>
+                  </Command>
+                </PopoverContent>
+              </Popover>
               <p className="text-xs text-muted-foreground">{t.categoryHint}</p>
             </div>
             <div className="space-y-2">
               <label className="text-sm font-medium">{t.pricelist}</label>
-              <Select value={selectedPricelist} onValueChange={setSelectedPricelist} dir={isRTL ? "rtl" : "ltr"}>
-                <SelectTrigger className="w-full">
-                  <SelectValue placeholder={isRTL ? "قائمة الأسعار" : "Pricelist"} />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value={PL_ANY}>{isRTL ? "الكل" : "All"}</SelectItem>
-                  {pricelistOptions.map((p) => (
-                    <SelectItem key={p} value={p}>
-                      {p}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <Popover open={pricelistOpen} onOpenChange={setPricelistOpen}>
+                <PopoverTrigger asChild>
+                  <Button variant="outline" role="combobox" aria-expanded={pricelistOpen} className="w-full justify-between font-normal">
+                    <span className="truncate">{selectedPricelist === PL_ANY ? (isRTL ? "الكل" : "All") : selectedPricelist}</span>
+                    <ChevronsUpDown className="ms-2 h-4 w-4 shrink-0 opacity-50" />
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent className="w-[min(100vw-2rem,28rem)] p-0" align="start">
+                  <Command>
+                    <CommandInput placeholder={t.searchPricelist} className="h-9" />
+                    <CommandList>
+                      <CommandEmpty>{t.noResults}</CommandEmpty>
+                      <CommandGroup>
+                        <CommandItem
+                          value="__any_pricelist__"
+                          onSelect={() => {
+                            setSelectedPricelist(PL_ANY);
+                            setPricelistOpen(false);
+                          }}
+                        >
+                          <Check className={cn("me-2 h-4 w-4", selectedPricelist === PL_ANY ? "opacity-100" : "opacity-0")} />
+                          {isRTL ? "الكل" : "All"}
+                        </CommandItem>
+                        {pricelistOptions.map((p) => (
+                          <CommandItem
+                            key={p}
+                            value={p}
+                            onSelect={() => {
+                              setSelectedPricelist(p);
+                              setPricelistOpen(false);
+                            }}
+                          >
+                            <Check className={cn("me-2 h-4 w-4", selectedPricelist === p ? "opacity-100" : "opacity-0")} />
+                            <span className="truncate">{p}</span>
+                          </CommandItem>
+                        ))}
+                      </CommandGroup>
+                    </CommandList>
+                  </Command>
+                </PopoverContent>
+              </Popover>
               <p className="text-xs text-muted-foreground">{t.pricelistHint}</p>
             </div>
-            <div className="space-y-2">
+            <div className="space-y-2 grid grid-cols-2 gap-2">
+              <div className="space-y-2">
               <label className="text-sm font-medium" htmlFor="price-filter">
                 {t.price}
               </label>
@@ -435,7 +558,23 @@ export default function ClientsByCategoryPricePage() {
                 value={priceInput}
                 onChange={(e) => setPriceInput(e.target.value)}
               />
-              <p className="text-xs text-muted-foreground">{t.priceHint}</p>
+              </div>
+              <div className="space-y-2">
+                <label className="text-sm font-medium" htmlFor="price-range-filter">
+                  {t.priceRange}
+                </label>
+                <Input
+                  id="price-range-filter"
+                  type="number"
+                  min={0}
+                  step="0.01"
+                  inputMode="decimal"
+                  placeholder={String(DEFAULT_PRICE_RANGE)}
+                  value={priceRangeInput}
+                  onChange={(e) => setPriceRangeInput(e.target.value)}
+                />
+              </div>
+              <p className="text-xs text-muted-foreground col-span-2">{t.priceHint}</p>
             </div>
           </div>
           <Button className="gap-2" onClick={() => void runSearch()} disabled={loading}>

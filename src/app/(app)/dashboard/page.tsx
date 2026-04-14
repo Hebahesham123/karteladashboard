@@ -112,6 +112,7 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(true);
   const [monthlyTrend, setMonthlyTrend] = useState<any[]>([]);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [showRefreshHint, setShowRefreshHint] = useState(false);
   const [orderCount, setOrderCount] = useState(0);
   const [totalRevenue, setTotalRevenue] = useState(0);
   const [kartelaTotal, setKartelaTotal] = useState(0);
@@ -646,6 +647,15 @@ export default function DashboardPage() {
   }, [dashFrom, dashTo, filters.selectedSalesperson, salespersonId, hasLoadedOnce, selectedProductNames, selectedClientIds, selectedCustTypes]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => { fetchData(); }, [fetchData]);
+
+  useEffect(() => {
+    if (!isRefreshing) {
+      setShowRefreshHint(false);
+      return;
+    }
+    const t = window.setTimeout(() => setShowRefreshHint(true), 1200);
+    return () => window.clearTimeout(t);
+  }, [isRefreshing]);
 
   // ── Separate rankings fetch with its own date range ──────────────────────
   const fetchRankings = useCallback(async () => {
@@ -1260,7 +1270,7 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      {isRefreshing && (
+      {showRefreshHint && (
         <div className="text-xs text-muted-foreground">{isRTL ? "جاري تحديث الأرقام..." : "Updating numbers..."}</div>
       )}
 

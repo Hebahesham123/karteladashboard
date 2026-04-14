@@ -6,6 +6,7 @@ import {
   fetchClientIdsForSalesperson,
   fetchDistinctFromOrdersForClients,
 } from "@/lib/orderImportMeta";
+import { getOrSetServerCache } from "@/lib/serverResponseCache";
 
 /**
  * Distinct order.category / order.pricelist for the selected calendar month.
@@ -52,7 +53,11 @@ export async function GET(req: NextRequest) {
   });
 
   if (profile.role === "admin") {
-    const r = await fetchDistinctCategoriesAndPricelists(admin, { month: m, year: y, maxPages: 500 });
+    const r = await getOrSetServerCache(
+      `order-distinct:admin:${m}:${y}`,
+      60_000,
+      () => fetchDistinctCategoriesAndPricelists(admin, { month: m, year: y, maxPages: 500 })
+    );
     return NextResponse.json(r);
   }
 
@@ -65,7 +70,11 @@ export async function GET(req: NextRequest) {
     if (idErr) {
       return NextResponse.json({ categories: [], pricelists: [], error: idErr });
     }
-    const r = await fetchDistinctFromOrdersForClients(admin, ids, m, y);
+    const r = await getOrSetServerCache(
+      `order-distinct:sales:${user.id}:${m}:${y}`,
+      60_000,
+      () => fetchDistinctFromOrdersForClients(admin, ids, m, y)
+    );
     return NextResponse.json(r);
   }
 
