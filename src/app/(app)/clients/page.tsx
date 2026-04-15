@@ -94,6 +94,7 @@ export default function ClientsPage() {
   const searchParams = useSearchParams();
   const [clients, setClients] = useState<ClientRow[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [fetchError, setFetchError] = useState<string | null>(null);
   const [sorting, setSorting] = useState<SortingState>([]);
   const [globalFilter, setGlobalFilter] = useState(() => searchParams.get("search") ?? "");
@@ -190,14 +191,13 @@ export default function ClientsPage() {
       const VIEW_COLS = "client_id, partner_id, client_name, current_status, total_meters, total_revenue, order_count, customer_type, level, cartela_count, top_product_cartela, top_product_name, salesperson_id, salesperson_name, salesperson_code, month, year, kartela_month, kartela_year, kartela_cross_month";
       const wantInactive = filters.selectedLevel === "INACTIVE";
 
-      const viewQ = (() => {
+      const viewBaseQ = (() => {
         let q = supabase
           .from("client_monthly_metrics")
           .select(VIEW_COLS)
           .eq("month", selectedMonth)
           .eq("year", selectedYear)
-          .in("customer_type", [...ALLOWED_CUSTOMER_TYPES])
-          .range(0, 9999);
+          .in("customer_type", [...ALLOWED_CUSTOMER_TYPES]);
         if (spFilter) q = q.eq("salesperson_id", spFilter);
         return q;
       })();
@@ -212,13 +212,43 @@ export default function ClientsPage() {
         return q;
       })();
 
-      const [viewRes, spData, inactiveClientsResult] = await Promise.all([
-        withTimeout(Promise.resolve(viewQ), 9000).catch(() => ({ data: [] as any[], error: { message: "view timeout" } as any })),
+      const fetchViewPage = async (offset: number, limit: number, retries = 1): Promise<any[]> => {
+        let attempt = 0;
+        while (attempt <= retries) {
+          try {
+            const res: any = await withTimeout(
+              Promise.resolve(viewBaseQ.range(offset, offset + limit - 1)),
+              9000
+            );
+            if (res.error) throw new Error(res.error.message);
+            return res.data ?? [];
+          } catch (err) {
+            if (attempt >= retries) throw err;
+            await new Promise((r) => setTimeout(r, 300 * (attempt + 1)));
+          }
+          attempt += 1;
+        }
+        return [];
+      };
+
+      const [firstPageRows, spData, inactiveClientsResult] = await Promise.all([
+        fetchViewPage(0, 1200).catch(() => [] as any[]),
         supabase.from("salespersons").select("id, name, code"),
         withTimeout(Promise.resolve(inactiveClientsQ), 6000).catch(() => ({ data: [] as any[], error: { message: "inactive timeout" } as any })),
       ]);
 
-      const viewRows = viewRes.data ?? [];
+      const viewRows = [...firstPageRows];
+      if (firstPageRows.length >= 1200) {
+        setLoadingMore(true);
+        const PAGE_SIZE = 1200;
+        for (let offset = PAGE_SIZE; ; offset += PAGE_SIZE) {
+          const pageRows = await fetchViewPage(offset, PAGE_SIZE, 2).catch(() => [] as any[]);
+          if (!pageRows.length) break;
+          viewRows.push(...pageRows);
+          if (pageRows.length < PAGE_SIZE) break;
+        }
+        setLoadingMore(false);
+      }
 
       const spMap = new Map<string, { name: string; code: string }>(
         (spData.data || []).map((s: any) => [s.id, { name: s.name, code: s.code }])
@@ -301,7 +331,7 @@ export default function ClientsPage() {
       }
       setClients(combined);
 
-      if ((viewRes as any).error && combined.length === 0) {
+      if (combined.length === 0) {
         setFetchError(isRTL ? "التحميل بطيء حالياً، حاول مرة أخرى خلال ثوانٍ." : "Loading is currently slow, please retry in a few seconds.");
       }
 
@@ -310,6 +340,7 @@ export default function ClientsPage() {
     }
 
     setLoading(false);
+    setLoadingMore(false);
   }, [filters.selectedMonth, filters.selectedYear, filters.selectedSalesperson, salespersonId]);  // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
@@ -1204,6 +1235,12 @@ export default function ClientsPage() {
                     <span className="text-sm md:text-base font-bold tabular-nums">
                       {table.getFilteredRowModel().rows.length.toLocaleString()}
                     </span>
+                  </span>
+                )}
+                {loadingMore && (
+                  <span className="inline-flex items-center gap-1 px-2 py-1 md:px-3 md:py-1.5 rounded-md md:rounded-lg bg-blue-50 border border-blue-200 text-[10px] md:text-xs font-semibold text-blue-700 dark:bg-blue-950/30 dark:border-blue-800 dark:text-blue-300">
+                    <RefreshCw className="h-3 w-3 animate-spin" />
+                    {isRTL ? "تحميل باقي العملاء..." : "Loading remaining clients..."}
                   </span>
                 )}
               </div>
