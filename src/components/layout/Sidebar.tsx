@@ -9,6 +9,7 @@ import {
   Users,
   Settings,
   TrendingUp,
+  BarChart3,
   LogOut,
   ChevronLeft,
   ChevronRight,
@@ -36,6 +37,7 @@ const navItems: NavItem[] = [
     icon: UserSearch,
     role: "admin",
   },
+  { labelEn: "Comparison", labelAr: "مقارنة", href: "/comparison", icon: BarChart3, role: "admin" },
   { labelEn: "My Clients", labelAr: "عملائي", href: "/sales", icon: TrendingUp, role: "sales" },
   { labelEn: "Kartela analysis", labelAr: "تحليل الكارتيلا", href: "/kartela-analysis", icon: Layers, role: "sales" },
   {
@@ -45,6 +47,7 @@ const navItems: NavItem[] = [
     icon: UserSearch,
     role: "sales",
   },
+  { labelEn: "Comparison", labelAr: "مقارنة", href: "/comparison", icon: BarChart3, role: "sales" },
   { labelEn: "Clients", labelAr: "العملاء", href: "/clients", icon: Users, role: "admin" },
   { labelEn: "Urgent Orders", labelAr: "الطلبات العاجلة", href: "/urgent-orders", icon: Siren, role: "admin" },
   { labelEn: "Admin", labelAr: "الإدارة", href: "/admin", icon: Settings, role: "admin" },

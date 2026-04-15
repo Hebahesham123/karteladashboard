@@ -2,11 +2,13 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Loader2, ShieldAlert } from "lucide-react";
+import { AlertTriangle, Loader2, Search, ShieldAlert, Users } from "lucide-react";
 import { useStore } from "@/store/useStore";
 import { PageBack } from "@/components/layout/PageBack";
 import { createClient } from "@/lib/supabase/client";
 import { Input } from "@/components/ui/input";
+import { Card, CardContent } from "@/components/ui/card";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
 type Salesperson = { id: string; code: string; name: string };
 type SalesLoad = { orderCount: number; meters: number };
@@ -18,6 +20,7 @@ export default function UrgentOrdersPage() {
   const now = new Date();
   const defaultMonth = now.getMonth() === 0 ? 12 : now.getMonth();
   const defaultYear = now.getMonth() === 0 ? now.getFullYear() - 1 : now.getFullYear();
+  const years = Array.from({ length: 6 }, (_, i) => defaultYear - i);
   const [salespersons, setSalespersons] = useState<Salesperson[]>([]);
   const [salesLoad, setSalesLoad] = useState<Record<string, SalesLoad>>({});
   const [loading, setLoading] = useState(true);
@@ -83,6 +86,20 @@ export default function UrgentOrdersPage() {
     });
   }, [salespersons, salesLoad, search]);
 
+  const stats = useMemo(() => {
+    const totalSalespersons = sortedSalespersons.length;
+    let lowPriorityCount = 0;
+    let activeClients = 0;
+    let totalMeters = 0;
+    sortedSalespersons.forEach((s) => {
+      const load = salesLoad[s.id] ?? { orderCount: 0, meters: 0 };
+      if (load.orderCount === 0 || load.meters < 100) lowPriorityCount++;
+      activeClients += load.orderCount;
+      totalMeters += load.meters;
+    });
+    return { totalSalespersons, lowPriorityCount, activeClients, totalMeters };
+  }, [sortedSalespersons, salesLoad]);
+
   if (currentUser?.role !== "admin") {
     return (
       <div className="flex flex-col items-center justify-center min-h-[60vh] gap-4">
@@ -95,17 +112,66 @@ export default function UrgentOrdersPage() {
   return (
     <div className="space-y-6">
       <PageBack locale={locale} fallbackHref="/dashboard" />
-      <div>
-        <h1 className="text-2xl font-bold">{isRTL ? "الطلبات العاجلة" : "Urgent Orders"}</h1>
-        <p className="text-muted-foreground text-sm mt-1">
-          {isRTL ? "اختر صندوق المندوب لفتح صفحة طلباته (جدول + فلاتر)" : "Click a salesperson box to open their orders page (table + filters)"}
-        </p>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h1 className="text-2xl md:text-3xl font-bold tracking-tight">{isRTL ? "الطلبات العاجلة" : "Urgent Orders"}</h1>
+          <p className="text-muted-foreground text-sm mt-1">
+            {isRTL ? "اختر المندوب لفتح صفحة طلباته العاجلة مع الجدول والفلاتر." : "Select a salesperson to open their urgent orders table with filters."}
+          </p>
+        </div>
+        <div className="text-xs text-muted-foreground rounded-lg border border-border px-3 py-2 bg-muted/20">
+          {isRTL ? "الفترة الحالية:" : "Current period:"}{" "}
+          <span className="font-semibold text-foreground">{month}/{year}</span>
+        </div>
       </div>
-      <div className="grid gap-3 md:grid-cols-3">
-        <Input value={month} onChange={(e) => setMonth(e.target.value)} placeholder={isRTL ? "شهر" : "Month"} />
-        <Input value={year} onChange={(e) => setYear(e.target.value)} placeholder={isRTL ? "سنة" : "Year"} />
-        <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder={isRTL ? "ابحث عن مندوب..." : "Search salesperson..."} />
+
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <Card><CardContent className="py-3"><p className="text-xs text-muted-foreground">{isRTL ? "إجمالي المندوبين" : "Salespersons"}</p><p className="text-xl font-bold tabular-nums">{stats.totalSalespersons}</p></CardContent></Card>
+        <Card><CardContent className="py-3"><p className="text-xs text-muted-foreground">{isRTL ? "أولوية عاجلة" : "Urgent priority"}</p><p className="text-xl font-bold tabular-nums text-red-500">{stats.lowPriorityCount}</p></CardContent></Card>
+        <Card><CardContent className="py-3"><p className="text-xs text-muted-foreground">{isRTL ? "العملاء النشطون" : "Active clients"}</p><p className="text-xl font-bold tabular-nums">{stats.activeClients.toLocaleString()}</p></CardContent></Card>
+        <Card><CardContent className="py-3"><p className="text-xs text-muted-foreground">{isRTL ? "إجمالي الأمتار" : "Total meters"}</p><p className="text-xl font-bold tabular-nums">{Math.round(stats.totalMeters).toLocaleString()}</p></CardContent></Card>
       </div>
+
+      <Card>
+        <CardContent className="pt-6">
+          <div className="grid gap-3 md:grid-cols-3">
+            <Select value={month} onValueChange={setMonth}>
+              <SelectTrigger>
+                <SelectValue placeholder={isRTL ? "اختر الشهر" : "Select month"} />
+              </SelectTrigger>
+              <SelectContent>
+                {Array.from({ length: 12 }, (_, i) => i + 1).map((m) => (
+                  <SelectItem key={m} value={String(m)}>
+                    {m}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Select value={year} onValueChange={setYear}>
+              <SelectTrigger>
+                <SelectValue placeholder={isRTL ? "اختر السنة" : "Select year"} />
+              </SelectTrigger>
+              <SelectContent>
+                {years.map((y) => (
+                  <SelectItem key={y} value={String(y)}>
+                    {y}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <div className="relative">
+              <Search className="h-4 w-4 absolute top-1/2 -translate-y-1/2 left-3 text-muted-foreground" />
+              <Input
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder={isRTL ? "ابحث عن مندوب..." : "Search salesperson..."}
+                className="pl-9"
+              />
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
       {loadingLoadStats && (
         <p className="text-xs text-muted-foreground">
           {isRTL ? "جاري تحديث ترتيب الأولوية..." : "Updating priority order..."}
@@ -123,15 +189,38 @@ export default function UrgentOrdersPage() {
               key={s.id}
               type="button"
               onClick={() => router.push(`/urgent-orders/${s.id}`)}
-              className={`rounded-lg border transition px-3 py-3 text-start bg-gradient-to-br from-slate-900/30 via-slate-800/20 to-slate-700/10
-                ${isLow ? "border-red-400/50 shadow-[0_0_0_1px_rgba(248,113,113,0.2)]" : "border-border/70"}
-                hover:from-slate-900/40 hover:via-slate-800/25 hover:to-slate-700/15`}
+              className={`group rounded-2xl border transition-all duration-200 px-4 py-3 text-start bg-card hover:shadow-lg hover:-translate-y-0.5
+                ${isLow ? "border-red-300/70 dark:border-red-800/70 bg-red-50/30 dark:bg-red-950/20" : "border-border hover:border-primary/40"}
+              `}
             >
-              <p className="text-sm font-semibold truncate">{s.name}</p>
-              <p className="text-xs text-muted-foreground font-mono">{s.code}</p>
-              <p className={`mt-1 text-[11px] ${isLow ? "text-red-300" : "text-muted-foreground"}`}>
-                {isRTL ? `عملاء نشطون: ${load.orderCount} · أمتار: ${Math.round(load.meters)}` : `Active Clients: ${load.orderCount} · Meters: ${Math.round(load.meters)}`}
-              </p>
+              <div className="flex items-start justify-between gap-2">
+                <div className="min-w-0">
+                  <p className="text-sm font-semibold truncate">{s.name}</p>
+                  <p className="text-xs text-muted-foreground font-mono truncate">{s.code}</p>
+                </div>
+                <span
+                  className={`inline-flex items-center gap-1 rounded-full px-2 py-1 text-[10px] font-medium ${
+                    isLow
+                      ? "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300"
+                      : "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300"
+                  }`}
+                >
+                  {isLow ? <AlertTriangle className="h-3 w-3" /> : <Users className="h-3 w-3" />}
+                  {isLow ? (isRTL ? "عاجل" : "Urgent") : (isRTL ? "مستقر" : "Stable")}
+                </span>
+              </div>
+              <div className="mt-3 flex items-center justify-between text-xs">
+                <span className="text-muted-foreground">
+                  {isRTL ? "عملاء نشطون" : "Active clients"}
+                </span>
+                <span className="font-semibold tabular-nums">{load.orderCount.toLocaleString()}</span>
+              </div>
+              <div className="mt-1 flex items-center justify-between text-xs">
+                <span className="text-muted-foreground">
+                  {isRTL ? "الأمتار" : "Meters"}
+                </span>
+                <span className="font-semibold tabular-nums">{Math.round(load.meters).toLocaleString()}</span>
+              </div>
             </button>
           )})}
         </div>

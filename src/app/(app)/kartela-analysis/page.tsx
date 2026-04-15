@@ -2,7 +2,7 @@
 
 import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { ChevronDown, ChevronRight, Loader2, RefreshCw } from "lucide-react";
+import { ChevronDown, ChevronRight, Loader2, MessageSquare, RefreshCw } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { useStore } from "@/store/useStore";
 import { ALLOWED_CUSTOMER_TYPES } from "@/lib/customerTypes";
@@ -17,6 +17,13 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 interface MeterBreakdownLine {
   label: string;
   meters: number;
+}
+
+interface CommentEntry {
+  id: string;
+  note: string;
+  createdAt: string;
+  userName: string;
 }
 
 interface ClientAgg {
@@ -42,6 +49,7 @@ interface ClientAgg {
   invoiceRefs: string[];
   /** Distinct Odoo pricelist names (e.g. VIP (EGP)). */
   pricelists: string[];
+  comments: CommentEntry[];
 }
 
 interface FamilyRow {
@@ -114,6 +122,55 @@ function MeterBreakdownCell({
             </li>
           ))}
         </ul>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+function CommentsHover({
+  label,
+  comments,
+  isRTL,
+}: {
+  label: string;
+  comments: CommentEntry[];
+  isRTL: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  if (comments.length === 0) return <span>{label}</span>;
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          onMouseEnter={() => setOpen(true)}
+          onMouseLeave={() => setOpen(false)}
+          onFocus={() => setOpen(true)}
+          onBlur={() => setOpen(false)}
+          className="inline-flex items-center gap-1.5 hover:underline text-start"
+        >
+          <span className="truncate">{label}</span>
+          <MessageSquare className="h-3.5 w-3.5 text-blue-600 dark:text-blue-400 shrink-0" />
+          <span className="text-[11px] text-muted-foreground">({comments.length})</span>
+        </button>
+      </PopoverTrigger>
+      <PopoverContent
+        className="w-[min(92vw,28rem)]"
+        align="start"
+        dir={isRTL ? "rtl" : "ltr"}
+        onMouseEnter={() => setOpen(true)}
+        onMouseLeave={() => setOpen(false)}
+      >
+        <div className="space-y-2 max-h-72 overflow-y-auto">
+          {comments.map((c) => (
+            <div key={c.id} className="rounded-md border border-border/70 px-3 py-2">
+              <p className="text-sm text-foreground whitespace-pre-wrap break-words">{c.note}</p>
+              <p className="text-[11px] text-muted-foreground mt-1">
+                {c.userName} · {new Date(c.createdAt).toLocaleString()}
+              </p>
+            </div>
+          ))}
+        </div>
       </PopoverContent>
     </Popover>
   );
@@ -276,6 +333,32 @@ export default function KartelaAnalysisPage() {
         });
       }
 
+      const commentsByClient = new Map<string, CommentEntry[]>();
+      const NOTE_CHUNK = 150;
+      for (let i = 0; i < scopedAllowedIds.length; i += NOTE_CHUNK) {
+        const noteChunk = scopedAllowedIds.slice(i, i + NOTE_CHUNK);
+        const { data: noteRows, error: noteErr } = await supabase
+          .from("activity_logs")
+          .select("id, entity_id, metadata, created_at, users(full_name)")
+          .eq("activity_type", "NOTE_ADDED")
+          .in("entity_id", noteChunk)
+          .order("created_at", { ascending: false });
+        if (noteErr) throw new Error(noteErr.message);
+        (noteRows ?? []).forEach((row: any) => {
+          const clientId = String(row.entity_id ?? "");
+          if (!clientId) return;
+          const note = String(row.metadata?.note ?? "").trim();
+          if (!note) return;
+          if (!commentsByClient.has(clientId)) commentsByClient.set(clientId, []);
+          commentsByClient.get(clientId)!.push({
+            id: String(row.id),
+            note,
+            createdAt: String(row.created_at),
+            userName: String(row.users?.full_name ?? "—"),
+          });
+        });
+      }
+
       const byFamily = new Map<string, Map<string, ClientAgg>>();
 
       const ensure = (base: string, cid: string): ClientAgg => {
@@ -299,6 +382,7 @@ export default function KartelaAnalysisPage() {
             categoryLabels: [],
             invoiceRefs: [],
             pricelists: [],
+            comments: commentsByClient.get(cid) ?? [],
           });
         }
         return m.get(cid)!;
@@ -469,19 +553,15 @@ export default function KartelaAnalysisPage() {
     kartelaQty: isRTL ? "كمية كارتيلا" : "Kartela qty",
     clientsMeters: isRTL ? "عملاء بأمتار" : "Clients (meters)",
     clientsKartela: isRTL ? "عملاء بكارتيلا" : "Clients (kartela)",
-    kartelaOnly: isRTL ? "كارتيلا بدون أمتار (هذا الخط)" : "Kartela only (this line)",
     avgMeter: isRTL ? "متوسط سعر المتر" : "Avg / meter",
-    topNoMeters: isRTL ? "أعلى كارتيلا — بدون أمتار على هذا الخط" : "Top kartela — no meters on this line",
     details: isRTL ? "تفاصيل العملاء" : "Client details",
     partner: isRTL ? "الرقم" : "Partner",
-    type: isRTL ? "النوع" : "Type",
+    client: isRTL ? "العميل" : "Client",
     refresh: isRTL ? "تحديث" : "Refresh",
     empty: isRTL ? "لا توجد طلبات في هذه الفترة" : "No orders in this period",
     access: isRTL ? "غير مصرح" : "Access denied",
     meterBreakdownHint: isRTL ? "تفاصيل الأمتار حسب اللون / الصفة" : "Meters by color / variant",
-    categoryCol: isRTL ? "التصنيف" : "Category",
-    invoiceCol: isRTL ? "فاتوره" : "Invoice",
-    pricelistCol: isRTL ? "قائمة الأسعار" : "Pricelist",
+    families: isRTL ? "عدد الخطوط" : "Families",
   };
 
   const selectedProductBase = useMemo(() => {
@@ -524,6 +604,20 @@ export default function KartelaAnalysisPage() {
       })
       .filter((f): f is FamilyRow => Boolean(f));
   }, [families, selectedProductBase, filters.selectedClient, filters.selectedClients]);
+
+  const stats = useMemo(() => {
+    let totalMeters = 0;
+    let totalKartela = 0;
+    let clientsMeters = 0;
+    let clientsKartela = 0;
+    visibleFamilies.forEach((f) => {
+      totalMeters += f.totalMeterQty;
+      totalKartela += f.totalKartelaQty;
+      clientsMeters += f.clientsWithMeters;
+      clientsKartela += f.clientsWithKartela;
+    });
+    return { totalMeters, totalKartela, clientsMeters, clientsKartela, families: visibleFamilies.length };
+  }, [visibleFamilies]);
 
   if (currentUser && currentUser.role !== "admin" && currentUser.role !== "sales") {
     return (
@@ -582,12 +676,20 @@ export default function KartelaAnalysisPage() {
           <CardContent className="py-10 text-center text-muted-foreground">{t.empty}</CardContent>
         </Card>
       ) : (
-        <Card className="overflow-hidden">
+        <div className="space-y-4">
+          <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+            <Card><CardContent className="py-3"><p className="text-xs text-muted-foreground">{t.families}</p><p className="text-xl font-bold tabular-nums">{stats.families}</p></CardContent></Card>
+            <Card><CardContent className="py-3"><p className="text-xs text-muted-foreground">{t.meterQty}</p><p className="text-xl font-bold tabular-nums">{formatNumber(Math.round(stats.totalMeters))}</p></CardContent></Card>
+            <Card><CardContent className="py-3"><p className="text-xs text-muted-foreground">{t.kartelaQty}</p><p className="text-xl font-bold tabular-nums">{formatNumber(Math.round(stats.totalKartela))}</p></CardContent></Card>
+            <Card><CardContent className="py-3"><p className="text-xs text-muted-foreground">{t.clientsMeters}</p><p className="text-xl font-bold tabular-nums">{stats.clientsMeters.toLocaleString()}</p></CardContent></Card>
+            <Card><CardContent className="py-3"><p className="text-xs text-muted-foreground">{t.clientsKartela}</p><p className="text-xl font-bold tabular-nums">{stats.clientsKartela.toLocaleString()}</p></CardContent></Card>
+          </div>
+          <Card className="overflow-hidden">
           <CardContent className="p-0">
             <div className="overflow-x-auto" dir={isRTL ? "rtl" : "ltr"}>
               <table className="w-full min-w-[900px] text-sm border-collapse border border-border">
-                <thead>
-                  <tr className="bg-muted/70 dark:bg-muted/50">
+                <thead className="sticky top-0 z-10">
+                  <tr className="bg-muted/80 dark:bg-muted/60 backdrop-blur">
                     <th className="border border-border p-3 text-start font-semibold align-bottom whitespace-nowrap">
                       {t.family}
                     </th>
@@ -598,9 +700,6 @@ export default function KartelaAnalysisPage() {
                       {t.clientsKartela}
                     </th>
                     <th className="border border-border p-3 text-end font-semibold align-bottom whitespace-nowrap tabular-nums">
-                      {t.kartelaOnly}
-                    </th>
-                    <th className="border border-border p-3 text-end font-semibold align-bottom whitespace-nowrap tabular-nums">
                       {t.meterQty}
                     </th>
                     <th className="border border-border p-3 text-end font-semibold align-bottom whitespace-nowrap tabular-nums">
@@ -608,9 +707,6 @@ export default function KartelaAnalysisPage() {
                     </th>
                     <th className="border border-border p-3 text-end font-semibold align-bottom whitespace-nowrap tabular-nums">
                       {t.avgMeter}
-                    </th>
-                    <th className="border border-border p-3 text-start font-semibold align-bottom min-w-[200px] max-w-[320px]">
-                      {t.topNoMeters}
                     </th>
                     <th className="border border-border p-3 text-center font-semibold align-bottom whitespace-nowrap w-px">
                       {t.details}
@@ -620,7 +716,7 @@ export default function KartelaAnalysisPage() {
                 <tbody>
                   {visibleFamilies.map((f) => (
                     <Fragment key={f.baseName}>
-                      <tr className="hover:bg-muted/30 dark:hover:bg-muted/20 transition-colors">
+                      <tr className="hover:bg-muted/30 dark:hover:bg-muted/20 transition-colors odd:bg-background even:bg-muted/10">
                         <td className="border border-border p-3 font-semibold align-top">
                           {f.baseName}
                         </td>
@@ -629,9 +725,6 @@ export default function KartelaAnalysisPage() {
                         </td>
                         <td className="border border-border p-3 text-end tabular-nums align-top">
                           {f.clientsWithKartela}
-                        </td>
-                        <td className="border border-border p-3 text-end tabular-nums align-top">
-                          {f.kartelaOnlyClients}
                         </td>
                         <td className="border border-border p-3 text-end tabular-nums align-top">
                           {formatNumber(Math.round(f.totalMeterQty))}
@@ -643,24 +736,6 @@ export default function KartelaAnalysisPage() {
                           {f.avgMeterUnitPrice != null
                             ? Math.round(f.avgMeterUnitPrice).toLocaleString()
                             : "—"}
-                        </td>
-                        <td className="border border-border p-3 text-xs align-top max-w-[320px]">
-                          {f.topKartelaNoMeters.length === 0 ? (
-                            <span className="text-muted-foreground">—</span>
-                          ) : (
-                            <ul className="space-y-1.5 text-foreground/90">
-                              {f.topKartelaNoMeters.map((c) => (
-                                <li key={`${c.partnerId}-${c.name}`} className="leading-snug">
-                                  <span className="font-medium">{c.name}</span>
-                                  <span className="text-muted-foreground mx-1">·</span>
-                                  <span className="tabular-nums">{formatNumber(c.kartelaQty)}</span>
-                                  {c.customerType ? (
-                                    <span className="text-muted-foreground ms-1">({c.customerType})</span>
-                                  ) : null}
-                                </li>
-                              ))}
-                            </ul>
-                          )}
                         </td>
                         <td className="border border-border p-3 align-top whitespace-nowrap">
                           <Button
@@ -680,7 +755,7 @@ export default function KartelaAnalysisPage() {
                       </tr>
                       {expanded === f.baseName && (
                         <tr>
-                          <td colSpan={12} className="border border-border border-t-0 p-0 bg-muted/20">
+                          <td colSpan={7} className="border border-border border-t-0 p-0 bg-muted/20">
                             <div className="overflow-x-auto p-3">
                               <table className="w-full min-w-[640px] text-sm border-collapse border border-border caption-bottom">
                                 <thead>
@@ -689,22 +764,10 @@ export default function KartelaAnalysisPage() {
                                       {t.partner}
                                     </th>
                                     <th className="border border-border p-2 font-semibold text-start">
-                                      {isRTL ? "العميل" : "Client"}
+                                      {t.client}
                                     </th>
                                     <th className="border border-border p-2 font-semibold text-start">
                                       {t.salesperson}
-                                    </th>
-                                    <th className="border border-border p-2 font-semibold text-start">
-                                      {t.type}
-                                    </th>
-                                    <th className="border border-border p-2 font-semibold text-start">
-                                      {t.categoryCol}
-                                    </th>
-                                    <th className="border border-border p-2 font-semibold text-start">
-                                      {t.invoiceCol}
-                                    </th>
-                                    <th className="border border-border p-2 font-semibold text-start">
-                                      {t.pricelistCol}
                                     </th>
                                     <th className="border border-border p-2 font-semibold text-end">
                                       {t.meterQty}
@@ -720,26 +783,22 @@ export default function KartelaAnalysisPage() {
                                       <td className="border border-border p-2 font-mono text-xs text-muted-foreground">
                                         {c.partnerId}
                                       </td>
-                                      <td className="border border-border p-2 font-medium">{c.name}</td>
+                                      <td className="border border-border p-2 font-medium max-w-[220px] truncate">
+                                        <CommentsHover
+                                          label={c.name}
+                                          comments={c.comments}
+                                          isRTL={isRTL}
+                                        />
+                                      </td>
                                       <td
                                         className="border border-border p-2 text-xs max-w-[140px] truncate"
                                         title={c.salespersonName ?? ""}
                                       >
-                                        {c.salespersonName ?? "—"}
-                                      </td>
-                                      <td className="border border-border p-2 text-xs">
-                                        {c.customerType ?? "—"}
-                                      </td>
-                                      <td className="border border-border p-2 text-xs max-w-[140px]">
-                                        {c.categoryLabels.length
-                                          ? c.categoryLabels.join(", ")
-                                          : "—"}
-                                      </td>
-                                      <td className="border border-border p-2 text-xs font-mono max-w-[160px] break-all">
-                                        {c.invoiceRefs.length ? c.invoiceRefs.join(", ") : "—"}
-                                      </td>
-                                      <td className="border border-border p-2 text-xs max-w-[120px]">
-                                        {c.pricelists.length ? c.pricelists.join(", ") : "—"}
+                                        <CommentsHover
+                                          label={c.salespersonName ?? "—"}
+                                          comments={c.comments}
+                                          isRTL={isRTL}
+                                        />
                                       </td>
                                       <td className="border border-border p-2 text-end">
                                         <MeterBreakdownCell
@@ -767,6 +826,7 @@ export default function KartelaAnalysisPage() {
             </div>
           </CardContent>
         </Card>
+        </div>
       )}
     </div>
   );
