@@ -273,9 +273,14 @@ export default function ClientsByCategoryPricePage() {
       }
 
       const orderRows: any[] = [];
-      const CHUNK = 100;
+      const CHUNK = 200;
+      const CONCURRENCY = 6;
+      const chunks: string[][] = [];
       for (let i = 0; i < allowedIds.length; i += CHUNK) {
-        const chunk = allowedIds.slice(i, i + CHUNK);
+        chunks.push(allowedIds.slice(i, i + CHUNK));
+      }
+
+      const fetchChunk = async (chunk: string[]) => {
         const q = supabase
           .from("orders")
           .select(
@@ -286,7 +291,13 @@ export default function ClientsByCategoryPricePage() {
           .in("client_id", chunk);
         const { data, error: oe } = await q;
         if (oe) throw new Error(oe.message);
-        orderRows.push(...(data ?? []));
+        return data ?? [];
+      };
+
+      for (let i = 0; i < chunks.length; i += CONCURRENCY) {
+        const slice = chunks.slice(i, i + CONCURRENCY);
+        const batch = await Promise.all(slice.map((chunk) => fetchChunk(chunk)));
+        batch.forEach((rows) => orderRows.push(...rows));
       }
 
       const out: MatchRow[] = [];
@@ -385,6 +396,10 @@ export default function ClientsByCategoryPricePage() {
     searchPricelist: isRTL ? "ابحث عن قائمة أسعار..." : "Search pricelist...",
     noResults: isRTL ? "لا توجد نتائج" : "No results found",
     empty: isRTL ? "لا توجد نتائج لهذه المعايير" : "No matching orders",
+    aiAnalyzing: isRTL ? "جارٍ التحليل بالذكاء الاصطناعي…" : "AI analyzing…",
+    aiAnalyzingHint: isRTL
+      ? "يتم مطابقة التصنيف والأسعار مع الطلبات لهذه الفترة."
+      : "Matching category and prices to orders for this period.",
     access: isRTL ? "غير مصرح" : "Access denied",
     period: isRTL ? "الفترة" : "Period",
     distinctEmptyHint: isRTL
@@ -591,9 +606,19 @@ export default function ClientsByCategoryPricePage() {
       )}
 
       {loading ? (
-        <div className="flex justify-center py-16 text-muted-foreground gap-2">
-          <Loader2 className="h-5 w-5 animate-spin" />
-        </div>
+        <Card className="overflow-hidden border-violet-200/70 bg-gradient-to-br from-violet-50/90 via-background to-background dark:border-violet-900/50 dark:from-violet-950/25 dark:via-background">
+          <CardContent className="flex flex-col items-center justify-center gap-3 py-16 px-4 text-center">
+            <div className="relative">
+              <Loader2 className="h-12 w-12 animate-spin text-violet-600 dark:text-violet-400" aria-hidden />
+            </div>
+            <p className="text-lg font-semibold text-violet-800 dark:text-violet-200 tracking-tight">
+              {t.aiAnalyzing}
+            </p>
+            <p className="text-sm text-muted-foreground max-w-md leading-relaxed">
+              {t.aiAnalyzingHint}
+            </p>
+          </CardContent>
+        </Card>
       ) : hasSearched && matches.length === 0 ? (
         <Card>
           <CardContent className="py-10 text-center text-muted-foreground">{t.empty}</CardContent>
