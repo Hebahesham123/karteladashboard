@@ -334,29 +334,50 @@ export default function KartelaAnalysisPage() {
       }
 
       const commentsByClient = new Map<string, CommentEntry[]>();
-      const NOTE_CHUNK = 150;
-      for (let i = 0; i < scopedAllowedIds.length; i += NOTE_CHUNK) {
-        const noteChunk = scopedAllowedIds.slice(i, i + NOTE_CHUNK);
-        const { data: noteRows, error: noteErr } = await supabase
-          .from("activity_logs")
-          .select("id, entity_id, metadata, created_at, users(full_name)")
-          .eq("activity_type", "NOTE_ADDED")
-          .in("entity_id", noteChunk)
-          .order("created_at", { ascending: false });
-        if (noteErr) throw new Error(noteErr.message);
-        (noteRows ?? []).forEach((row: any) => {
+      try {
+        const NOTE_CHUNK = 150;
+        const noteRowsAll: any[] = [];
+        for (let i = 0; i < scopedAllowedIds.length; i += NOTE_CHUNK) {
+          const noteChunk = scopedAllowedIds.slice(i, i + NOTE_CHUNK);
+          const { data: noteRows, error: noteErr } = await supabase
+            .from("activity_logs")
+            .select("id, entity_id, user_id, metadata, created_at")
+            .eq("activity_type", "NOTE_ADDED")
+            .in("entity_id", noteChunk)
+            .order("created_at", { ascending: false });
+          if (noteErr) continue;
+          noteRowsAll.push(...(noteRows ?? []));
+        }
+
+        const userIds = Array.from(
+          new Set(
+            noteRowsAll
+              .map((r) => (r?.user_id ? String(r.user_id) : ""))
+              .filter(Boolean)
+          )
+        );
+        let userNameById = new Map<string, string>();
+        if (userIds.length > 0) {
+          const { data: userRows } = await supabase.from("users").select("id, full_name").in("id", userIds);
+          userNameById = new Map((userRows ?? []).map((u: any) => [String(u.id), String(u.full_name ?? "—")]));
+        }
+
+        noteRowsAll.forEach((row: any) => {
           const clientId = String(row.entity_id ?? "");
           if (!clientId) return;
           const note = String(row.metadata?.note ?? "").trim();
           if (!note) return;
           if (!commentsByClient.has(clientId)) commentsByClient.set(clientId, []);
+          const uid = row?.user_id ? String(row.user_id) : "";
           commentsByClient.get(clientId)!.push({
             id: String(row.id),
             note,
             createdAt: String(row.created_at),
-            userName: String(row.users?.full_name ?? "—"),
+            userName: uid ? userNameById.get(uid) ?? "—" : "—",
           });
         });
+      } catch {
+        // Notes history is best-effort; never block table loading.
       }
 
       const byFamily = new Map<string, Map<string, ClientAgg>>();

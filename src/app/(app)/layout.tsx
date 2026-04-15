@@ -9,6 +9,7 @@ import { createClient } from "@/lib/supabase/client";
 import { useStore } from "@/store/useStore";
 
 const MOBILE_MQ = "(max-width: 767px)";
+const WARMUP_CACHE_KEY = "app_warmup_v1";
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
   const router = useRouter();
@@ -66,17 +67,37 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     if (!currentUser) return;
+    if (typeof window !== "undefined" && window.sessionStorage.getItem(WARMUP_CACHE_KEY) === "1") return;
     const now = new Date();
     const month = now.getMonth() === 0 ? 12 : now.getMonth();
     const year = now.getMonth() === 0 ? now.getFullYear() - 1 : now.getFullYear();
+    const ctrl = new AbortController();
+    const abortTimer = window.setTimeout(() => ctrl.abort(), 5000);
 
     // Warm up common API responses so screens feel instant on first open.
-    void fetch(`/api/order-distinct-filters?month=${month}&year=${year}`, { credentials: "include" });
+    void fetch(`/api/order-distinct-filters?month=${month}&year=${year}`, {
+      credentials: "include",
+      signal: ctrl.signal,
+      cache: "no-store",
+    }).catch(() => undefined);
     if (currentUser.role === "admin") {
-      void fetch(`/api/urgent-orders/admin?salespersonId=__init__&month=${month}&year=${year}`, { credentials: "include" });
+      void fetch(`/api/urgent-orders/admin?salespersonId=__init__&month=${month}&year=${year}`, {
+        credentials: "include",
+        signal: ctrl.signal,
+        cache: "no-store",
+      }).catch(() => undefined);
     } else if (currentUser.role === "sales") {
-      void fetch("/api/urgent-orders/my", { credentials: "include" });
+      void fetch("/api/urgent-orders/my", {
+        credentials: "include",
+        signal: ctrl.signal,
+        cache: "no-store",
+      }).catch(() => undefined);
     }
+    if (typeof window !== "undefined") window.sessionStorage.setItem(WARMUP_CACHE_KEY, "1");
+    return () => {
+      window.clearTimeout(abortTimer);
+      ctrl.abort();
+    };
   }, [currentUser]);
 
   const handleLocaleChange = (newLocale: string) => {

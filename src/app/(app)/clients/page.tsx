@@ -148,7 +148,7 @@ export default function ClientsPage() {
     const selectedMonth = filters.selectedMonth ?? (now.getMonth() + 1);
     const selectedYear  = filters.selectedYear  ?? now.getFullYear();
     const spFilter      = salespersonId || filters.selectedSalesperson;
-    const cacheKey = `clients_v10:${selectedYear}-${selectedMonth}-${spFilter || "all"}`;
+    const cacheKey = `clients_v11:${selectedYear}-${selectedMonth}-${spFilter || "all"}`;
     const persistKey = `${CLIENTS_PERSIST_PREFIX}${cacheKey}`;
 
     // ── Global session cache hit → render instantly ──────────────────────
@@ -181,69 +181,44 @@ export default function ClientsPage() {
 
     if (!hasBootData) setLoading(true);
     try {
-      const PAGE_SIZE = 1000;
-
-      // Helper: sequential page fetcher — logs errors instead of silently swallowing them
-      const fetchPages = async (
-        table: string,
-        cols: string,
-        applyFilters: (q: any) => any
-      ): Promise<{ rows: any[]; error: string | null }> => {
-        const all: any[] = [];
-        let offset = 0;
-        while (true) {
-          const { data, error } = await applyFilters(
-            supabase.from(table).select(cols)
-          ).range(offset, offset + PAGE_SIZE - 1);
-          if (error) {
-            console.error(`[fetchPages] ${table} error:`, error.message);
-            return { rows: all, error: error.message };
-          }
-          if (!data?.length) break;
-          all.push(...data);
-          if (data.length < PAGE_SIZE) break;
-          offset += PAGE_SIZE;
-        }
-        return { rows: all, error: null };
-      };
+      const withTimeout = async <T,>(p: Promise<T>, ms: number): Promise<T> =>
+        await Promise.race([
+          p,
+          new Promise<T>((_, reject) => setTimeout(() => reject(new Error(`timeout-${ms}ms`)), ms)),
+        ]);
 
       const VIEW_COLS = "client_id, partner_id, client_name, current_status, total_meters, total_revenue, order_count, customer_type, level, cartela_count, top_product_cartela, top_product_name, salesperson_id, salesperson_name, salesperson_code, month, year, kartela_month, kartela_year, kartela_cross_month";
       const wantInactive = filters.selectedLevel === "INACTIVE";
 
-      // ── 1. Fetch in parallel: view rows + salespersons + (if inactive: all clients, else: count only) ──
-      const clientCountQ = (() => {
-        let q = supabase.from("clients").select("id", { count: "exact", head: true }).in("customer_type", [...ALLOWED_CUSTOMER_TYPES]);
+      const viewQ = (() => {
+        let q = supabase
+          .from("client_monthly_metrics")
+          .select(VIEW_COLS)
+          .eq("month", selectedMonth)
+          .eq("year", selectedYear)
+          .in("customer_type", [...ALLOWED_CUSTOMER_TYPES])
+          .range(0, 9999);
         if (spFilter) q = q.eq("salesperson_id", spFilter);
         return q;
       })();
-      const inactiveClientsQ = wantInactive
-        ? fetchPages("clients", "id, partner_id, name, salesperson_id, current_status, customer_type", (q) => {
-            let qq = q.in("customer_type", [...ALLOWED_CUSTOMER_TYPES]);
-            if (spFilter) return qq.eq("salesperson_id", spFilter);
-            return qq;
-          })
-        : Promise.resolve({ rows: [], error: null });
+      const inactiveClientsQ = (() => {
+        if (!wantInactive) return Promise.resolve({ data: [] as any[], error: null });
+        let q = supabase
+          .from("clients")
+          .select("id, partner_id, name, salesperson_id, current_status, customer_type")
+          .in("customer_type", [...ALLOWED_CUSTOMER_TYPES])
+          .range(0, 9999);
+        if (spFilter) q = q.eq("salesperson_id", spFilter);
+        return q;
+      })();
 
-      const [viewResult, spData, clientCountResult, inactiveClientsResult] = await Promise.all([
-        fetchPages("client_monthly_metrics", VIEW_COLS, (q) => {
-          let qq = q.eq("month", selectedMonth).eq("year", selectedYear).in("customer_type", [...ALLOWED_CUSTOMER_TYPES]);
-          if (spFilter) qq = qq.eq("salesperson_id", spFilter);
-          return qq;
-        }),
+      const [viewRes, spData, inactiveClientsResult] = await Promise.all([
+        withTimeout(Promise.resolve(viewQ), 9000).catch(() => ({ data: [] as any[], error: { message: "view timeout" } as any })),
         supabase.from("salespersons").select("id, name, code"),
-        clientCountQ,
-        inactiveClientsQ,
+        withTimeout(Promise.resolve(inactiveClientsQ), 6000).catch(() => ({ data: [] as any[], error: { message: "inactive timeout" } as any })),
       ]);
 
-      let viewRows = viewResult.rows;
-
-      // Safety net: if view returned 0 rows → retry once
-      if (viewRows.length === 0 && (clientCountResult as any)?.count > 50 && !viewResult.error) {
-        const { data: retryData } = await supabase
-          .from("client_monthly_metrics").select(VIEW_COLS)
-          .eq("month", selectedMonth).eq("year", selectedYear).in("customer_type", [...ALLOWED_CUSTOMER_TYPES]).range(0, 29999);
-        viewRows = retryData || [];
-      }
+      const viewRows = viewRes.data ?? [];
 
       const spMap = new Map<string, { name: string; code: string }>(
         (spData.data || []).map((s: any) => [s.id, { name: s.name, code: s.code }])
@@ -294,7 +269,7 @@ export default function ClientsPage() {
 
       // Step B: dormant clients — only fetched when user explicitly filters for INACTIVE
       if (wantInactive) {
-        inactiveClientsResult.rows.forEach((c: any) => {
+        (inactiveClientsResult.data ?? []).forEach((c: any) => {
           if (seenIds.has(c.id)) return;
           const sp = spMap.get(c.salesperson_id);
           combined.push({
@@ -314,57 +289,7 @@ export default function ClientsPage() {
         });
       }
 
-      // Step C: for clients with 0 meters but with kartela count, resolve product name from orders.
-      // This keeps "cartela-only" rows readable instead of showing blank product.
-      const noMeterClientIds = combined
-        .filter((c) => c.total_meters <= 0 && (c.cartela_count > 0 || c.top_product_cartela > 0) && !c.top_product_name)
-        .map((c) => c.id);
-      if (noMeterClientIds.length > 0) {
-        const topKartelaByClient = new Map<string, { base: string; qty: number }>();
-        const chunks: string[][] = [];
-        for (let i = 0; i < noMeterClientIds.length; i += 500) chunks.push(noMeterClientIds.slice(i, i + 500));
-        for (const chunk of chunks) {
-          const { data: orderRows } = await supabase
-            .from("orders")
-            .select("client_id, quantity, products(name)")
-            .eq("month", selectedMonth)
-            .eq("year", selectedYear)
-            .in("client_id", chunk);
-          (orderRows ?? []).forEach((r: any) => {
-            const p = Array.isArray(r.products) ? r.products[0]?.name : r.products?.name;
-            const pname = String(p ?? "").trim();
-            if (!pname || !isKartelaProductName(pname)) return;
-            const base = kartelaFamilyBaseKey(pname);
-            const qty = Number(r.quantity) || 0;
-            const prev = topKartelaByClient.get(r.client_id);
-            if (!prev || qty > prev.qty) topKartelaByClient.set(r.client_id, { base, qty });
-          });
-        }
-        combined.forEach((c) => {
-          if (c.top_product_name) return;
-          const top = topKartelaByClient.get(c.id);
-          if (top?.base) c.top_product_name = top.base;
-        });
-      }
-
-      // Step D: category / pricelist / invoice from meter lines (selected month)
-      const idsForImport = combined.map((c) => c.id);
-      if (idsForImport.length > 0) {
-        const { byClient, error: importMetaErr } = await fetchClientMeterOrderImportFields(
-          supabase,
-          idsForImport,
-          selectedMonth,
-          selectedYear
-        );
-        if (importMetaErr) console.warn("[clients] order import meta:", importMetaErr);
-        combined.forEach((c) => {
-          const m = byClient.get(c.id);
-          if (!m) return;
-          c.order_import_category = m.category || null;
-          c.order_import_pricelist = m.pricelist || null;
-          c.order_import_invoice = m.invoice || null;
-        });
-      }
+      // Skip heavy order enrichments on initial load to keep page responsive.
 
       // Performance: skip per-client notes/status hydration here.
       // Notes are loaded in expanded log panel on demand.
@@ -375,6 +300,10 @@ export default function ClientsPage() {
         try { window.sessionStorage.setItem(persistKey, JSON.stringify(combined)); } catch {}
       }
       setClients(combined);
+
+      if ((viewRes as any).error && combined.length === 0) {
+        setFetchError(isRTL ? "التحميل بطيء حالياً، حاول مرة أخرى خلال ثوانٍ." : "Loading is currently slow, please retry in a few seconds.");
+      }
 
     } catch (err: any) {
       setFetchError(err?.message || "Network error — check Supabase connection");
@@ -479,7 +408,7 @@ export default function ClientsPage() {
   };
 
   const invalidateClientCache = () => {
-    dataCache.invalidate("clients_v10:");
+    dataCache.invalidate("clients_v11:");
   };
   const toggleRow = (id: string) => setSelectedRows(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
   const toggleAll = (rows: ClientRow[]) => setSelectedRows(prev => prev.size === rows.length ? new Set() : new Set(rows.map(r => r.id)));
@@ -1079,6 +1008,7 @@ export default function ClientsPage() {
             size="sm"
             onClick={() => {
               dataCache.invalidate("clients_v10:");
+              dataCache.invalidate("clients_v11:");
               fetchClients(true);
             }}
             className="gap-1.5 md:gap-2 h-8 text-xs md:text-sm px-2 md:px-3"

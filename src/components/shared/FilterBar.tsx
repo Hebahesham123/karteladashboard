@@ -21,6 +21,9 @@ const OPTIONS_TTL_MS = 5 * 60 * 1000;
 let salespersonsCache: { ts: number; data: { id: string; name: string }[] } | null = null;
 let productsCache: { ts: number; data: { id: string; name: string }[] } | null = null;
 const clientsCacheBySp = new Map<string, { ts: number; data: { id: string; name: string; partner_id: string }[] }>();
+let salespersonsInFlight: Promise<{ id: string; name: string }[]> | null = null;
+let productsInFlight: Promise<{ id: string; name: string }[]> | null = null;
+const clientsInFlightBySp = new Map<string, Promise<{ id: string; name: string; partner_id: string }[]>>();
 
 interface FilterBarProps {
   locale: string;
@@ -77,12 +80,20 @@ export function FilterBar({
         if (salespersonsCache && nowTs - salespersonsCache.ts < OPTIONS_TTL_MS) {
           setSalespersons(salespersonsCache.data);
         } else {
-          const { data } = await supabase
-            .from("salespersons")
-            .select("id, name")
-            .eq("is_active", true)
-            .order("name");
-          const rows = data || [];
+          const fetchPromise =
+            salespersonsInFlight ??
+            (async () => {
+              const { data } = await supabase
+                .from("salespersons")
+                .select("id, name")
+                .eq("is_active", true)
+                .order("name");
+              return data || [];
+            })();
+          salespersonsInFlight = fetchPromise;
+          const rows = await fetchPromise.finally(() => {
+            salespersonsInFlight = null;
+          });
           salespersonsCache = { ts: nowTs, data: rows };
           setSalespersons(rows);
         }
@@ -91,12 +102,20 @@ export function FilterBar({
         if (productsCache && nowTs - productsCache.ts < OPTIONS_TTL_MS) {
           setProducts(productsCache.data);
         } else {
-          const { data } = await supabase
-            .from("products")
-            .select("id, name")
-            .eq("is_active", true)
-            .order("name");
-          const rows = data || [];
+          const fetchPromise =
+            productsInFlight ??
+            (async () => {
+              const { data } = await supabase
+                .from("products")
+                .select("id, name")
+                .eq("is_active", true)
+                .order("name");
+              return data || [];
+            })();
+          productsInFlight = fetchPromise;
+          const rows = await fetchPromise.finally(() => {
+            productsInFlight = null;
+          });
           productsCache = { ts: nowTs, data: rows };
           setProducts(rows);
         }
@@ -107,15 +126,23 @@ export function FilterBar({
         if (cached && nowTs - cached.ts < OPTIONS_TTL_MS) {
           setClients(cached.data);
         } else {
-          let q = supabase
-            .from("clients")
-            .select("id, name, partner_id")
-            .order("name")
-            .limit(2000);
-          const effSp = salespersonId || filters.selectedSalesperson;
-          if (effSp) q = q.eq("salesperson_id", effSp);
-          const { data } = await q;
-          const rows = data || [];
+          const fetchPromise =
+            clientsInFlightBySp.get(spKey) ??
+            (async () => {
+              let q = supabase
+                .from("clients")
+                .select("id, name, partner_id")
+                .order("name")
+                .limit(2000);
+              const effSp = salespersonId || filters.selectedSalesperson;
+              if (effSp) q = q.eq("salesperson_id", effSp);
+              const { data } = await q;
+              return data || [];
+            })();
+          clientsInFlightBySp.set(spKey, fetchPromise);
+          const rows = await fetchPromise.finally(() => {
+            clientsInFlightBySp.delete(spKey);
+          });
           clientsCacheBySp.set(spKey, { ts: nowTs, data: rows });
           setClients(rows);
         }

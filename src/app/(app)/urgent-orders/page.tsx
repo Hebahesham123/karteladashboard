@@ -34,31 +34,44 @@ export default function UrgentOrdersPage() {
   }, [currentUser, router]);
 
   useEffect(() => {
+    let active = true;
     const loadSalespersons = async () => {
+      setLoading(true);
       const supabase = createClient();
       const { data } = await supabase.from("salespersons").select("id, name, code").eq("is_active", true).order("name");
+      if (!active) return;
       setSalespersons((data ?? []) as Salesperson[]);
       (data ?? []).forEach((s: Salesperson) => {
         router.prefetch(`/urgent-orders/${s.id}`);
       });
       setLoading(false);
-      setLoadingLoadStats(true);
+    };
+    void loadSalespersons();
+    return () => {
+      active = false;
+    };
+  }, [router]);
 
+  useEffect(() => {
+    let active = true;
+    const loadStats = async () => {
+      setLoadingLoadStats(true);
+      const supabase = createClient();
       const monthNum = Number(month);
       const yearNum = Number(year);
       const loadMap: Record<string, SalesLoad> = Object.create(null);
       const { data: perfRows, error } = await supabase
-          .from("salesperson_performance")
-          .select("salesperson_id, active_clients, total_meters")
-          .eq("month", monthNum)
-          .eq("year", yearNum)
-          .not("salesperson_id", "is", null);
+        .from("salesperson_performance")
+        .select("salesperson_id, active_clients, total_meters")
+        .eq("month", monthNum)
+        .eq("year", yearNum)
+        .not("salesperson_id", "is", null);
+      if (!active) return;
       if (!error && perfRows?.length) {
         perfRows.forEach((r: { salesperson_id: string | null; active_clients: number | null; total_meters: number | null }) => {
           const sid = r.salesperson_id;
           if (!sid) return;
           loadMap[sid] = {
-            // We use active clients as a fast load indicator for urgency ranking.
             orderCount: Number(r.active_clients) || 0,
             meters: Number(r.total_meters) || 0,
           };
@@ -67,8 +80,11 @@ export default function UrgentOrdersPage() {
       setSalesLoad(loadMap);
       setLoadingLoadStats(false);
     };
-    void loadSalespersons();
-  }, [month, year, router]);
+    void loadStats();
+    return () => {
+      active = false;
+    };
+  }, [month, year]);
 
   const sortedSalespersons = useMemo(() => {
     const needle = search.trim().toLowerCase();
