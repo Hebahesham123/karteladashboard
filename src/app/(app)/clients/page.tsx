@@ -96,6 +96,7 @@ export default function ClientsPage() {
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [fetchError, setFetchError] = useState<string | null>(null);
+  const [partialLoadInfo, setPartialLoadInfo] = useState<string | null>(null);
   const [sorting, setSorting] = useState<SortingState>([]);
   const [globalFilter, setGlobalFilter] = useState(() => searchParams.get("search") ?? "");
   const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>(() => {
@@ -144,6 +145,7 @@ export default function ClientsPage() {
 
   const fetchClients = useCallback(async (forceRefresh = false) => {
     setFetchError(null);
+    setPartialLoadInfo(null);
     const supabase = createClient();
     const now = new Date();
     const selectedMonth = filters.selectedMonth ?? (now.getMonth() + 1);
@@ -191,7 +193,7 @@ export default function ClientsPage() {
       const VIEW_COLS = "client_id, partner_id, client_name, current_status, total_meters, total_revenue, order_count, customer_type, level, cartela_count, top_product_cartela, top_product_name, salesperson_id, salesperson_name, salesperson_code, month, year, kartela_month, kartela_year, kartela_cross_month";
       const wantInactive = filters.selectedLevel === "INACTIVE";
 
-      const viewBaseQ = (() => {
+      const buildViewQ = () => {
         let q = supabase
           .from("client_monthly_metrics")
           .select(VIEW_COLS)
@@ -200,7 +202,7 @@ export default function ClientsPage() {
           .in("customer_type", [...ALLOWED_CUSTOMER_TYPES]);
         if (spFilter) q = q.eq("salesperson_id", spFilter);
         return q;
-      })();
+      };
       const inactiveClientsQ = (() => {
         if (!wantInactive) return Promise.resolve({ data: [] as any[], error: null });
         let q = supabase
@@ -217,7 +219,7 @@ export default function ClientsPage() {
         while (attempt <= retries) {
           try {
             const res: any = await withTimeout(
-              Promise.resolve(viewBaseQ.range(offset, offset + limit - 1)),
+              Promise.resolve(buildViewQ().range(offset, offset + limit - 1)),
               9000
             );
             if (res.error) throw new Error(res.error.message);
@@ -231,18 +233,32 @@ export default function ClientsPage() {
         return [];
       };
 
-      const [firstPageRows, spData, inactiveClientsResult] = await Promise.all([
-        fetchViewPage(0, 1200).catch(() => [] as any[]),
+      const countQ = (() => {
+        let q = supabase
+          .from("client_monthly_metrics")
+          .select("client_id", { count: "exact", head: true })
+          .eq("month", selectedMonth)
+          .eq("year", selectedYear)
+          .in("customer_type", [...ALLOWED_CUSTOMER_TYPES]);
+        if (spFilter) q = q.eq("salesperson_id", spFilter);
+        return q;
+      })();
+
+      const PAGE_SIZE = 1000;
+      const [countRes, firstPageRows, spData, inactiveClientsResult] = await Promise.all([
+        withTimeout(Promise.resolve(countQ), 8000).catch(() => ({ count: null } as any)),
+        fetchViewPage(0, PAGE_SIZE, 3),
         supabase.from("salespersons").select("id, name, code"),
         withTimeout(Promise.resolve(inactiveClientsQ), 6000).catch(() => ({ data: [] as any[], error: { message: "inactive timeout" } as any })),
       ]);
 
       const viewRows = [...firstPageRows];
-      if (firstPageRows.length >= 1200) {
+      const expectedCount = Number((countRes as any)?.count) || 0;
+      if (firstPageRows.length >= PAGE_SIZE) {
         setLoadingMore(true);
-        const PAGE_SIZE = 1200;
         for (let offset = PAGE_SIZE; ; offset += PAGE_SIZE) {
-          const pageRows = await fetchViewPage(offset, PAGE_SIZE, 2).catch(() => [] as any[]);
+          if (expectedCount > 0 && offset >= expectedCount) break;
+          const pageRows = await fetchViewPage(offset, PAGE_SIZE, 4);
           if (!pageRows.length) break;
           viewRows.push(...pageRows);
           if (pageRows.length < PAGE_SIZE) break;
@@ -319,7 +335,28 @@ export default function ClientsPage() {
         });
       }
 
-      // Skip heavy order enrichments on initial load to keep page responsive.
+      // Step C: category / pricelist / invoice from meter lines (selected month)
+      // Chunked to avoid very large IN filters/timeouts.
+      const idsForImport = combined.map((c) => c.id);
+      if (idsForImport.length > 0) {
+        const mergedByClient = new Map<string, { category: string; pricelist: string; invoice: string }>();
+        const CHUNK = 800;
+        for (let i = 0; i < idsForImport.length; i += CHUNK) {
+          const chunk = idsForImport.slice(i, i + CHUNK);
+          const { byClient } = await withTimeout(
+            fetchClientMeterOrderImportFields(supabase, chunk, selectedMonth, selectedYear),
+            9000
+          ).catch(() => ({ byClient: new Map<string, { category: string; pricelist: string; invoice: string }>() }));
+          byClient.forEach((v, k) => mergedByClient.set(k, v));
+        }
+        combined.forEach((c) => {
+          const m = mergedByClient.get(c.id);
+          if (!m) return;
+          c.order_import_category = m.category || null;
+          c.order_import_pricelist = m.pricelist || null;
+          c.order_import_invoice = m.invoice || null;
+        });
+      }
 
       // Performance: skip per-client notes/status hydration here.
       // Notes are loaded in expanded log panel on demand.
@@ -331,7 +368,13 @@ export default function ClientsPage() {
       }
       setClients(combined);
 
-      if (combined.length === 0) {
+      if (expectedCount > 0 && viewRows.length < expectedCount) {
+        setPartialLoadInfo(
+          isRTL
+            ? `تم تحميل ${viewRows.length.toLocaleString()} من أصل ${expectedCount.toLocaleString()} عميل. أعد التحميل لاستكمال الباقي.`
+            : `Loaded ${viewRows.length.toLocaleString()} of ${expectedCount.toLocaleString()} clients. Refresh to load the remainder.`
+        );
+      } else if (combined.length === 0) {
         setFetchError(isRTL ? "التحميل بطيء حالياً، حاول مرة أخرى خلال ثوانٍ." : "Loading is currently slow, please retry in a few seconds.");
       }
 
@@ -1198,11 +1241,19 @@ export default function ClientsPage() {
         <div className="rounded-xl border border-red-200 bg-red-50 dark:bg-red-950/20 dark:border-red-800 p-4 text-sm text-red-700 dark:text-red-400">
           <p className="font-semibold mb-1">{isRTL ? "خطأ في تحميل البيانات:" : "Error loading data:"}</p>
           <p className="font-mono text-xs break-all">{fetchError}</p>
-          <p className="mt-2 text-xs opacity-80">
-            {isRTL
-              ? "تأكد من تشغيل ملف SQL في Supabase (sql-step2-client-metrics-view.sql)"
-              : "Make sure you ran the SQL fix in Supabase (sql-step2-client-metrics-view.sql)"}
-          </p>
+        </div>
+      )}
+      {partialLoadInfo && (
+        <div className="rounded-xl border border-amber-200 bg-amber-50 dark:bg-amber-950/20 dark:border-amber-800 p-3 text-xs text-amber-700 dark:text-amber-300 flex items-center justify-between gap-3">
+          <span>{partialLoadInfo}</span>
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-7 text-xs"
+            onClick={() => fetchClients(true)}
+          >
+            {isRTL ? "إعادة التحميل" : "Reload"}
+          </Button>
         </div>
       )}
 

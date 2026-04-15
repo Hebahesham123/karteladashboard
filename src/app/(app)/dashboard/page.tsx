@@ -111,6 +111,7 @@ export default function DashboardPage() {
 
   const [loading, setLoading] = useState(true);
   const [monthlyTrend, setMonthlyTrend] = useState<any[]>([]);
+  const [dashError, setDashError] = useState<string | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [showRefreshHint, setShowRefreshHint] = useState(false);
   const [orderCount, setOrderCount] = useState(0);
@@ -207,6 +208,7 @@ export default function DashboardPage() {
   }, []);
 
   const fetchData = useCallback(async (forceRefresh = false) => {
+    setDashError(null);
     const supabase  = createClient();
     const spFilter  = salespersonId || filters.selectedSalesperson;
     const startVal  = dashFrom.year * 12 + dashFrom.month;
@@ -223,7 +225,7 @@ export default function DashboardPage() {
     const prodKey = [...selectedProductNames].sort().join("|");
     const cliKey = [...selectedClientIds].sort().join("|");
     const custKey = [...selectedCustTypes].sort().join("|");
-    const cacheKey = `dash_v6:${dashFrom.year}-${dashFrom.month}:${dashTo.year}-${dashTo.month}-${spFilter || "all"}-${prodKey}-${cliKey}-${custKey}`;
+    const cacheKey = `dash_v7:${dashFrom.year}-${dashFrom.month}:${dashTo.year}-${dashTo.month}-${spFilter || "all"}-${prodKey}-${cliKey}-${custKey}`;
     const persistKey = `${DASH_PERSIST_PREFIX}${cacheKey}`;
 
     // ── Global session cache hit ──────────────────────────────────────────
@@ -636,13 +638,14 @@ export default function DashboardPage() {
           // Ignore storage quota errors.
         }
       }
+      setHasLoadedOnce(true);
 
     } catch (err) {
       console.error("Dashboard fetch error:", err);
+      setDashError(isRTL ? "تعذر تحميل بيانات لوحة التحكم حالياً." : "Dashboard data failed to load right now.");
     } finally {
       setLoading(false);
       setIsRefreshing(false);
-      setHasLoadedOnce(true);
     }
   }, [dashFrom, dashTo, filters.selectedSalesperson, salespersonId, hasLoadedOnce, selectedProductNames, selectedClientIds, selectedCustTypes]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -661,6 +664,20 @@ export default function DashboardPage() {
   const fetchRankings = useCallback(async () => {
     const supabase = createClient();
     const spFilter = salespersonId || filters.selectedSalesperson;
+    const rankCacheKey = `dash_rank_v1:${dashFrom.year}-${dashFrom.month}:${dashTo.year}-${dashTo.month}:${spFilter || "all"}:${selectedProductNames.slice().sort().join("|")}:${selectedClientIds.slice().sort().join("|")}:${selectedCustTypes.slice().sort().join("|")}`;
+
+    const cachedRanks = dataCache.get<{
+      leaderboard: { id: string; name: string; code: string; meters: number; clients: number; revenue: number }[];
+      topProducts: { name: string; qty: number; revenue: number; clients: number }[];
+      topClients: { client_id: string; name: string; partner_id: string; meters: number; revenue: number }[];
+    }>(rankCacheKey);
+    if (cachedRanks) {
+      setLeaderboard(cachedRanks.leaderboard);
+      setTopProducts(cachedRanks.topProducts);
+      setTopClients(cachedRanks.topClients);
+      setRankLoading(false);
+      return;
+    }
 
     setRankLoading(true);
     try {
@@ -739,12 +756,6 @@ export default function DashboardPage() {
       spAgg.forEach((e, sid) => {
         e.clients = spClientSets.get(sid)?.size ?? 0;
       });
-      setLeaderboard(
-        Array.from(spAgg.entries())
-          .map(([id, e]) => ({ id, ...e }))
-          .sort((a, b) => b.meters - a.meters)
-          .slice(0, 15),
-      );
 
       // ── 2. Product ranking ─────────────────────────────────────────────────
       const useCmmForProducts =
@@ -809,8 +820,6 @@ export default function DashboardPage() {
         productRanking = Array.from(prodAgg.entries()).map(([name, v]) => ({ name, ...v }));
       }
 
-      setTopProducts(productRanking.sort((a, b) => b.qty - a.qty).slice(0, 10));
-
       // ── 3. Client ranking ──────────────────────────────────────────────────
       const clientRankRows = await fetchAllPages((from, to) =>
         rankingCmmQuery(
@@ -835,13 +844,25 @@ export default function DashboardPage() {
           revenue:    prev.revenue + (Number(r.total_revenue) || 0),
         });
       });
-      setTopClients(
-        Array.from(clientAgg.entries())
-          .map(([client_id, c]) => ({ client_id, ...c }))
-          .filter((c) => !isExcludedFromClientLeaderboard(c.name))
-          .sort((a, b) => b.meters - a.meters)
-          .slice(0, 10),
-      );
+      const finalLeaderboard = Array.from(spAgg.entries())
+        .map(([id, e]) => ({ id, ...e }))
+        .sort((a, b) => b.meters - a.meters)
+        .slice(0, 15);
+      const finalTopProducts = productRanking.sort((a, b) => b.qty - a.qty).slice(0, 10);
+      const finalTopClients = Array.from(clientAgg.entries())
+        .map(([client_id, c]) => ({ client_id, ...c }))
+        .filter((c) => !isExcludedFromClientLeaderboard(c.name))
+        .sort((a, b) => b.meters - a.meters)
+        .slice(0, 10);
+
+      setLeaderboard(finalLeaderboard);
+      setTopProducts(finalTopProducts);
+      setTopClients(finalTopClients);
+      dataCache.set(rankCacheKey, {
+        leaderboard: finalLeaderboard,
+        topProducts: finalTopProducts,
+        topClients: finalTopClients,
+      });
     } catch (e) {
       console.error("Rankings fetch error:", e);
     } finally {
@@ -1272,6 +1293,11 @@ export default function DashboardPage() {
 
       {showRefreshHint && (
         <div className="text-xs text-muted-foreground">{isRTL ? "جاري تحديث الأرقام..." : "Updating numbers..."}</div>
+      )}
+      {dashError && (
+        <div className="rounded-lg border border-destructive/25 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+          {dashError}
+        </div>
       )}
 
       {/* Multi-month notice — warn user that dashboard aggregates across months

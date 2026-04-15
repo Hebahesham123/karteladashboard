@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { ArrowDown, ArrowUp, Loader2 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -10,6 +10,7 @@ import { PageBack } from "@/components/layout/PageBack";
 import { createClient } from "@/lib/supabase/client";
 import { useStore } from "@/store/useStore";
 import { formatNumber } from "@/lib/utils";
+import { dataCache } from "@/lib/dataCache";
 
 type CompareMode = "product" | "salesperson" | "client" | "kartela" | "net-profit";
 type Period = { month: number; year: number };
@@ -47,6 +48,7 @@ export default function ComparisonPage() {
   const [rightTotal, setRightTotal] = useState(0);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const hasAutoLoadedRef = useRef(false);
 
   const years = useMemo(() => Array.from({ length: 6 }, (_, i) => currentYear - 3 + i), [currentYear]);
 
@@ -172,6 +174,16 @@ export default function ComparisonPage() {
 
   const runComparison = useCallback(async () => {
     if (!currentUser) return;
+    const cacheKey = `comparison_v1:${mode}:${left.year}-${left.month}:${right.year}-${right.month}:${currentUser.role}:${salespersonId ?? "all"}:${locale}`;
+    const cached = dataCache.get<{ rows: CompareRow[]; leftTotal: number; rightTotal: number }>(cacheKey);
+    if (cached) {
+      setRows(cached.rows);
+      setLeftTotal(cached.leftTotal);
+      setRightTotal(cached.rightTotal);
+      setError(null);
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     setError(null);
     try {
@@ -186,8 +198,11 @@ export default function ComparisonPage() {
       });
       merged.sort((a, b) => Math.max(b.left, b.right) - Math.max(a.left, a.right));
       setRows(merged);
-      setLeftTotal(merged.reduce((sum, item) => sum + item.left, 0));
-      setRightTotal(merged.reduce((sum, item) => sum + item.right, 0));
+      const leftAgg = merged.reduce((sum, item) => sum + item.left, 0);
+      const rightAgg = merged.reduce((sum, item) => sum + item.right, 0);
+      setLeftTotal(leftAgg);
+      setRightTotal(rightAgg);
+      dataCache.set(cacheKey, { rows: merged, leftTotal: leftAgg, rightTotal: rightAgg });
     } catch (e: unknown) {
       setRows([]);
       setLeftTotal(0);
@@ -204,6 +219,8 @@ export default function ComparisonPage() {
       router.push("/dashboard");
       return;
     }
+    if (hasAutoLoadedRef.current) return;
+    hasAutoLoadedRef.current = true;
     void runComparison();
   }, [currentUser, router, runComparison]);
 

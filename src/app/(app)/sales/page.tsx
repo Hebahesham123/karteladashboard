@@ -26,6 +26,7 @@ import { PageBack } from "@/components/layout/PageBack";
 import { AddNoteDialog } from "@/components/clients/AddNoteDialog";
 import { UrgentOrdersTab } from "@/components/sales/UrgentOrdersTab";
 import { createClient } from "@/lib/supabase/client";
+import { dataCache } from "@/lib/dataCache";
 import { useStore } from "@/store/useStore";
 import { getLevelBadgeColor, getStatusColor, formatNumber } from "@/lib/utils";
 import { ALLOWED_CUSTOMER_TYPES, allowedCustomerTypesList } from "@/lib/customerTypes";
@@ -115,12 +116,38 @@ export default function SalesPage() {
   const fetchClients = useCallback(async () => {
     if (!currentUser) return;
     if (currentUser.role === "sales" && !salespersonId) { setLoading(false); return; }
-    setLoading(true);
 
     const supabase = createClient();
     const month = filters.selectedMonth;
     const year  = filters.selectedYear;
     const spId  = currentUser.role === "sales" ? salespersonId : (salespersonId ?? filters.selectedSalesperson);
+    const cacheKey = `sales_clients_v1:${currentUser.role}:${month ?? "all"}:${year ?? "all"}:${spId ?? "all"}`;
+    const persistedKey = `sales_clients_boot_v1:${cacheKey}`;
+
+    const cached = dataCache.get<{ clients: SalesClientRow[]; kartelaSummary: KartelaSummary }>(cacheKey);
+    if (cached) {
+      setClients(cached.clients);
+      setKartelaSummary(cached.kartelaSummary);
+      setLoading(false);
+      return;
+    }
+    if (typeof window !== "undefined") {
+      try {
+        const raw = window.sessionStorage.getItem(persistedKey);
+        if (raw) {
+          const persisted = JSON.parse(raw) as { clients: SalesClientRow[]; kartelaSummary: KartelaSummary };
+          if (Array.isArray(persisted?.clients) && persisted?.kartelaSummary) {
+            setClients(persisted.clients);
+            setKartelaSummary(persisted.kartelaSummary);
+            setLoading(false);
+          }
+        }
+      } catch {
+        // ignore invalid cached payload
+      }
+    }
+
+    setLoading(true);
 
     const VIEW_COLS = "client_id,partner_id,client_name,top_product_name,customer_type,total_meters,total_revenue,order_count,cartela_count,level,current_status,month,year";
 
@@ -158,25 +185,6 @@ export default function SalesPage() {
       }
     }
 
-    setClients(
-      allRows.map((r) => ({
-        id:               r.client_id,
-        partner_id:       r.partner_id ?? "",
-        name:             r.client_name ?? "",
-        top_product_name: r.top_product_name ?? null,
-        customer_type:    r.customer_type ?? null,
-        total_meters:     Number(r.total_meters)  || 0,
-        total_revenue:    Number(r.total_revenue) || 0,
-        order_count:      Number(r.order_count)   || 0,
-        cartela_count:    Number(r.cartela_count) || 0,
-        level:            (r.level ?? "RED") as OrderLevel,
-        current_status:   (clientMeta[r.client_id]?.current_status ?? r.current_status ?? "NEW") as ClientStatus,
-        notes:            clientMeta[r.client_id]?.notes ?? null,
-        month:            r.month ?? month ?? 0,
-        year:             r.year  ?? year  ?? 0,
-      })).sort((a, b) => b.total_meters - a.total_meters)
-    );
-
     // Kartela counters for the summary box:
     // combine direct order-line detection + monthly metrics fallback to avoid false zeroes.
     const kartelaClientSet = new Set<string>();
@@ -209,10 +217,36 @@ export default function SalesPage() {
       allRows.reduce((s, r) => s + (Number(r.cartela_count) || 0), 0)
     );
     const metricsKartelaClients = allRows.filter((r) => (Number(r.cartela_count) || 0) > 0).length;
-    setKartelaSummary({
+    const finalSummary = {
       qty: Math.max(Math.round(kartelaQty), metricsKartelaQty),
       clients: Math.max(kartelaClientSet.size, metricsKartelaClients),
-    });
+    };
+    const finalClients = allRows.map((r) => ({
+      id:               r.client_id,
+      partner_id:       r.partner_id ?? "",
+      name:             r.client_name ?? "",
+      top_product_name: r.top_product_name ?? null,
+      customer_type:    r.customer_type ?? null,
+      total_meters:     Number(r.total_meters)  || 0,
+      total_revenue:    Number(r.total_revenue) || 0,
+      order_count:      Number(r.order_count)   || 0,
+      cartela_count:    Number(r.cartela_count) || 0,
+      level:            (r.level ?? "RED") as OrderLevel,
+      current_status:   (clientMeta[r.client_id]?.current_status ?? r.current_status ?? "NEW") as ClientStatus,
+      notes:            clientMeta[r.client_id]?.notes ?? null,
+      month:            r.month ?? month ?? 0,
+      year:             r.year  ?? year  ?? 0,
+    })).sort((a, b) => b.total_meters - a.total_meters);
+    setClients(finalClients);
+    setKartelaSummary(finalSummary);
+    dataCache.set(cacheKey, { clients: finalClients, kartelaSummary: finalSummary });
+    if (typeof window !== "undefined") {
+      try {
+        window.sessionStorage.setItem(persistedKey, JSON.stringify({ clients: finalClients, kartelaSummary: finalSummary }));
+      } catch {
+        // ignore storage quota issues
+      }
+    }
     setLoading(false);
   }, [currentUser, filters.selectedMonth, filters.selectedYear, filters.selectedSalesperson, salespersonId]);
 

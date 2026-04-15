@@ -21,10 +21,12 @@ import { PageBack } from "@/components/layout/PageBack";
 import { createClient } from "@/lib/supabase/client";
 import { useStore } from "@/store/useStore";
 import { formatNumber, calculateGrowthRate, isExcludedFromSalesLeaderboard } from "@/lib/utils";
+import { dataCache } from "@/lib/dataCache";
 
 const COLORS = ["#3b82f6","#10b981","#f59e0b","#ef4444","#8b5cf6","#06b6d4","#f97316","#84cc16","#ec4899","#6366f1"];
 const MONTHS_AR = ["يناير","فبراير","مارس","أبريل","مايو","يونيو","يوليو","أغسطس","سبتمبر","أكتوبر","نوفمبر","ديسمبر"];
 const MONTHS_EN = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+const ANALYTICS_BOOT_PREFIX = "analytics_boot_v1:";
 
 const Tip = ({ active, payload, label }: any) => {
   if (!active || !payload?.length) return null;
@@ -57,11 +59,46 @@ export default function AnalyticsPage() {
   const [activeTab, setActiveTab] = useState("time");
 
   const fetchAll = useCallback(async () => {
-    setLoading(true);
     const supabase = createClient();
     const year          = filters.selectedYear;
     const selectedMonth = filters.selectedMonth;           // null = All Months
     const spFilter      = salespersonId || filters.selectedSalesperson;
+    const cacheKey = `analytics_v1:${year ?? "all"}:${selectedMonth ?? "all"}:${spFilter ?? "all"}:${locale}`;
+    const persistKey = `${ANALYTICS_BOOT_PREFIX}${cacheKey}`;
+
+    const cached = dataCache.get<{
+      products: any[];
+      salespersons: any[];
+      monthlyData: any[];
+      clientStats: { total: number; active: number; inactive: number; retentionRate: string; churnRate: string };
+    }>(cacheKey);
+    if (cached) {
+      setProducts(cached.products);
+      setSalespersons(cached.salespersons);
+      setMonthlyData(cached.monthlyData);
+      setClientStats(cached.clientStats);
+      setLoading(false);
+      return;
+    }
+    if (typeof window !== "undefined") {
+      try {
+        const raw = window.sessionStorage.getItem(persistKey);
+        if (raw) {
+          const persisted = JSON.parse(raw);
+          if (persisted?.products && persisted?.salespersons && persisted?.monthlyData && persisted?.clientStats) {
+            setProducts(persisted.products);
+            setSalespersons(persisted.salespersons);
+            setMonthlyData(persisted.monthlyData);
+            setClientStats(persisted.clientStats);
+            setLoading(false);
+          }
+        }
+      } catch {
+        // ignore invalid persisted payload
+      }
+    }
+
+    setLoading(true);
 
     let prodQ  = supabase.from("product_analytics").select("*").order("total_meters", { ascending: false });
     let salesQ = supabase.from("salesperson_performance").select("*").order("total_meters", { ascending: false }).limit(500);
@@ -182,6 +219,26 @@ export default function AnalyticsPage() {
         retentionRate: total > 0 ? ((greenC  / total) * 100).toFixed(1) : "0",
         churnRate:     total > 0 ? ((redC    / total) * 100).toFixed(1) : "0",
       });
+      const payload = {
+        products: Array.from(prodAgg.values()).sort((a, b) => b.meters - a.meters),
+        salespersons: Array.from(spAgg.values()).sort((a, b) => b.meters - a.meters),
+        monthlyData: trend12,
+        clientStats: {
+          total,
+          active: greenC + orangeC,
+          inactive: redC,
+          retentionRate: total > 0 ? ((greenC / total) * 100).toFixed(1) : "0",
+          churnRate: total > 0 ? ((redC / total) * 100).toFixed(1) : "0",
+        },
+      };
+      dataCache.set(cacheKey, payload);
+      if (typeof window !== "undefined") {
+        try {
+          window.sessionStorage.setItem(persistKey, JSON.stringify(payload));
+        } catch {
+          // ignore storage quota issues
+        }
+      }
     } catch (err) {
       console.error("Analytics fetch error:", err);
     } finally {

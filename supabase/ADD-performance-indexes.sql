@@ -16,8 +16,14 @@ create index if not exists idx_clients_salesperson_type
 create index if not exists idx_clients_type_name
   on public.clients (customer_type, name);
 
-create index if not exists idx_client_monthly_metrics_scope
-  on public.client_monthly_metrics (year, month, salesperson_id, customer_type);
+-- NOTE:
+-- client_monthly_metrics is a VIEW, so Postgres does not allow creating indexes on it.
+-- Add indexes on underlying base tables used by the view instead.
+create index if not exists idx_orders_year_month_salesperson_client
+  on public.orders (year, month, salesperson_id, client_id);
 
-create index if not exists idx_client_monthly_metrics_client_scope
-  on public.client_monthly_metrics (client_id, year, month);
+create index if not exists idx_orders_client_year_month
+  on public.orders (client_id, year, month);
+
+create index if not exists idx_clients_id_salesperson_type
+  on public.clients (id, salesperson_id, customer_type);
