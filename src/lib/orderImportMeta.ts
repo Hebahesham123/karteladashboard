@@ -220,3 +220,115 @@ export async function fetchClientMeterOrderImportFields(
 
   return { byClient, error: lastError };
 }
+
+/**
+ * Fallback per client: latest available non-empty product/category/pricelist/invoice
+ * from any month/year (used when selected month has sparse import columns).
+ */
+export async function fetchClientLatestOrderImportFallbackFields(
+  supabase: SupabaseClient,
+  clientIds: string[],
+  chunkSize = 120
+): Promise<{ byClient: Map<string, ClientOrderImportFields>; error: string | null }> {
+  const byClient = new Map<string, ClientOrderImportFields>();
+  let lastError: string | null = null;
+
+  const pick = (v: unknown) => String(v ?? "").trim();
+
+  for (let i = 0; i < clientIds.length; i += chunkSize) {
+    const chunk = clientIds.slice(i, i + chunkSize);
+    const { data, error } = await supabase
+      .from("orders")
+      .select("client_id, category, pricelist, invoice_ref, month, year, created_at, products(name)")
+      .in("client_id", chunk)
+      .order("year", { ascending: false })
+      .order("month", { ascending: false })
+      .order("created_at", { ascending: false });
+
+    if (error) {
+      lastError = error.message;
+      break;
+    }
+
+    for (const r of data ?? []) {
+      const row = r as {
+        client_id: string;
+        category?: string | null;
+        pricelist?: string | null;
+        invoice_ref?: string | null;
+        products?: unknown;
+      };
+      const cid = row.client_id;
+      if (!cid) continue;
+
+      const current = byClient.get(cid) ?? { product: "", category: "", pricelist: "", invoice: "" };
+      const next: ClientOrderImportFields = {
+        product: current.product || pick(productNameFromJoin(row)),
+        category: current.category || pick(row.category),
+        pricelist: current.pricelist || pick(row.pricelist),
+        invoice: current.invoice || pick(row.invoice_ref),
+      };
+      byClient.set(cid, next);
+    }
+  }
+
+  return { byClient, error: lastError };
+}
+
+/**
+ * Per client, pick ONE latest order line and return its exact fields.
+ * This keeps each table row consistent (no merged multi-value strings).
+ * If month/year are provided, search only that period.
+ */
+export async function fetchClientLatestOrderLineFields(
+  supabase: SupabaseClient,
+  clientIds: string[],
+  opts?: { month?: number; year?: number; chunkSize?: number }
+): Promise<{ byClient: Map<string, ClientOrderImportFields>; error: string | null }> {
+  const byClient = new Map<string, ClientOrderImportFields>();
+  let lastError: string | null = null;
+  const chunkSize = opts?.chunkSize ?? 120;
+
+  const clean = (v: unknown) => String(v ?? "").trim();
+
+  for (let i = 0; i < clientIds.length; i += chunkSize) {
+    const chunk = clientIds.slice(i, i + chunkSize);
+    let q = supabase
+      .from("orders")
+      .select("client_id, category, pricelist, invoice_ref, month, year, created_at, products(name)")
+      .in("client_id", chunk)
+      .order("year", { ascending: false })
+      .order("month", { ascending: false })
+      .order("created_at", { ascending: false });
+
+    if (opts?.month != null && opts?.year != null) {
+      q = q.eq("month", opts.month).eq("year", opts.year);
+    }
+
+    const { data, error } = await q;
+    if (error) {
+      lastError = error.message;
+      break;
+    }
+
+    for (const r of data ?? []) {
+      const row = r as {
+        client_id: string;
+        category?: string | null;
+        pricelist?: string | null;
+        invoice_ref?: string | null;
+        products?: unknown;
+      };
+      const cid = row.client_id;
+      if (!cid || byClient.has(cid)) continue;
+      byClient.set(cid, {
+        product: clean(productNameFromJoin(row)),
+        category: clean(row.category),
+        pricelist: clean(row.pricelist),
+        invoice: clean(row.invoice_ref),
+      });
+    }
+  }
+
+  return { byClient, error: lastError };
+}

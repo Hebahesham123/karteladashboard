@@ -46,7 +46,9 @@ import { useStore } from "@/store/useStore";
 import { getLevelBadgeColor, formatNumber, cn } from "@/lib/utils";
 import { ALLOWED_CUSTOMER_TYPES, allowedCustomerTypesList } from "@/lib/customerTypes";
 import { dataCache } from "@/lib/dataCache";
-import { fetchClientMeterOrderImportFields } from "@/lib/orderImportMeta";
+import {
+  fetchClientLatestOrderLineFields,
+} from "@/lib/orderImportMeta";
 import { isKartelaProductName, kartelaFamilyBaseKey } from "@/lib/kartelaProduct";
 import type { ClientStatus, OrderLevel } from "@/types/database";
 
@@ -335,8 +337,7 @@ export default function ClientsPage() {
         });
       }
 
-      // Step C: category / pricelist / invoice from meter lines (selected month)
-      // Chunked to avoid very large IN filters/timeouts.
+      // Step C: row-exact data per client from ONE latest order line in selected month.
       const idsForImport = combined.map((c) => c.id);
       if (idsForImport.length > 0) {
         const mergedByClient = new Map<string, { product: string; category: string; pricelist: string; invoice: string }>();
@@ -344,7 +345,7 @@ export default function ClientsPage() {
         for (let i = 0; i < idsForImport.length; i += CHUNK) {
           const chunk = idsForImport.slice(i, i + CHUNK);
           const { byClient } = await withTimeout(
-            fetchClientMeterOrderImportFields(supabase, chunk, selectedMonth, selectedYear),
+            fetchClientLatestOrderLineFields(supabase, chunk, { month: selectedMonth, year: selectedYear }),
             9000
           ).catch(() => ({ byClient: new Map<string, { product: string; category: string; pricelist: string; invoice: string }>() }));
           byClient.forEach((v, k) => mergedByClient.set(k, v));
@@ -357,6 +358,32 @@ export default function ClientsPage() {
           c.order_import_pricelist = m.pricelist || null;
           c.order_import_invoice = m.invoice || null;
         });
+
+        // Step D: fallback for rows still empty in selected month.
+        // Still one latest line per client, but from any month (keeps row-consistent data).
+        const missingIds = combined
+          .filter((c) => !c.top_product_name || !c.order_import_category || !c.order_import_pricelist || !c.order_import_invoice)
+          .map((c) => c.id);
+        if (missingIds.length > 0) {
+          const fallbackMap = new Map<string, { product: string; category: string; pricelist: string; invoice: string }>();
+          const FALLBACK_CHUNK = 500;
+          for (let i = 0; i < missingIds.length; i += FALLBACK_CHUNK) {
+            const chunk = missingIds.slice(i, i + FALLBACK_CHUNK);
+            const { byClient } = await withTimeout(
+              fetchClientLatestOrderLineFields(supabase, chunk),
+              12000
+            ).catch(() => ({ byClient: new Map<string, { product: string; category: string; pricelist: string; invoice: string }>() }));
+            byClient.forEach((v, k) => fallbackMap.set(k, v));
+          }
+          combined.forEach((c) => {
+            const f = fallbackMap.get(c.id);
+            if (!f) return;
+            if (!c.top_product_name && f.product) c.top_product_name = f.product;
+            if (!c.order_import_category && f.category) c.order_import_category = f.category;
+            if (!c.order_import_pricelist && f.pricelist) c.order_import_pricelist = f.pricelist;
+            if (!c.order_import_invoice && f.invoice) c.order_import_invoice = f.invoice;
+          });
+        }
       }
 
       // Performance: skip per-client notes/status hydration here.
