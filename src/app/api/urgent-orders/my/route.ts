@@ -27,13 +27,28 @@ export async function GET() {
   if (!sp?.id) return NextResponse.json({ rows: [] });
 
   const rows = await getOrSetServerCache(`urgent-my:${user.id}`, 30_000, async () => {
-    const { data: assignments, error: aErr } = await db
-      .from("urgent_order_assignments")
-      .select("order_id, note, created_at")
-      .eq("salesperson_id", sp.id)
-      .eq("is_active", true)
-      .order("created_at", { ascending: false });
-    if (aErr) throw new Error(aErr.message);
+    let assignments: any[] = [];
+    {
+      const res = await db
+        .from("urgent_order_assignments")
+        .select("order_id, note, created_at, client_status")
+        .eq("salesperson_id", sp.id)
+        .eq("is_active", true)
+        .order("created_at", { ascending: false });
+      if (res.error && String(res.error.message ?? "").includes("client_status")) {
+        const fallback = await db
+          .from("urgent_order_assignments")
+          .select("order_id, note, created_at")
+          .eq("salesperson_id", sp.id)
+          .eq("is_active", true)
+          .order("created_at", { ascending: false });
+        if (fallback.error) throw new Error(fallback.error.message);
+        assignments = fallback.data ?? [];
+      } else {
+        if (res.error) throw new Error(res.error.message);
+        assignments = res.data ?? [];
+      }
+    }
 
     const orderIds = (assignments ?? []).map((a) => a.order_id);
     if (!orderIds.length) return [];
@@ -66,6 +81,7 @@ export async function GET() {
         const c = clientMap.get(o.client_id);
         const p = productMap.get(o.product_id);
         const a = assignMap.get(o.id);
+        const urgentStatus = (a as any)?.client_status as string | null | undefined;
         return {
           id: o.id,
           client_id: o.client_id,
@@ -79,7 +95,7 @@ export async function GET() {
           client_name: c?.name ?? "—",
           partner_id: c?.partner_id ?? "—",
           product_name: p?.name ?? "—",
-          current_status: c?.current_status ?? "NEW",
+          current_status: (urgentStatus || c?.current_status || "NEW") as string,
           notes: c?.notes ?? null,
           urgent_note: a?.note ?? null,
           assigned_at: a?.created_at ?? null,
@@ -92,5 +108,12 @@ export async function GET() {
       });
   });
 
-  return NextResponse.json({ rows }, { headers: { "Cache-Control": "private, max-age=15, stale-while-revalidate=30" } });
+  return NextResponse.json(
+    { rows },
+    {
+      headers: {
+        "Cache-Control": "no-store, private",
+      },
+    }
+  );
 }

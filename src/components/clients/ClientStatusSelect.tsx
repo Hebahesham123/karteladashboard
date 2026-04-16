@@ -41,6 +41,8 @@ interface ClientStatusSelectProps {
   clientId: string;
   clientName: string;
   currentStatus: ClientStatus;
+  /** When set, status is stored on urgent_order_assignments for this order (not clients table). */
+  orderId?: string;
   locale: string;
   compact?: boolean;
   onUpdated: (newStatus: ClientStatus) => void;
@@ -50,6 +52,7 @@ export function ClientStatusSelect({
   clientId,
   clientName,
   currentStatus,
+  orderId,
   locale,
   compact = false,
   onUpdated,
@@ -79,31 +82,51 @@ export function ClientStatusSelect({
       const supabase = createClient() as any;
       const old = currentStatus;
 
-      await supabase
-        .from("clients")
-        .update({
-          current_status: newStatus,
-          status_reason: reasonText.trim() || null,
-          updated_at: new Date().toISOString(),
-        })
-        .eq("id", clientId);
+      if (orderId) {
+        const res = await fetch("/api/urgent-orders/my/status", {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({
+            orderId,
+            newStatus,
+            reason: reasonText.trim(),
+            clientName,
+          }),
+        });
+        const json = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          setError(String(json.error || (isRTL ? "فشل الحفظ" : "Save failed")));
+          setSelectValue(currentStatus);
+          return;
+        }
+      } else {
+        await supabase
+          .from("clients")
+          .update({
+            current_status: newStatus,
+            status_reason: reasonText.trim() || null,
+            updated_at: new Date().toISOString(),
+          })
+          .eq("id", clientId);
 
-      await supabase.from("client_status_history").insert({
-        client_id: clientId,
-        changed_by: currentUser.id,
-        old_status: old,
-        new_status: newStatus,
-        reason: reasonText.trim() || null,
-      });
+        await supabase.from("client_status_history").insert({
+          client_id: clientId,
+          changed_by: currentUser.id,
+          old_status: old,
+          new_status: newStatus,
+          reason: reasonText.trim() || null,
+        });
 
-      await supabase.from("activity_logs").insert({
-        user_id: currentUser.id,
-        activity_type: "STATUS_CHANGE",
-        entity_type: "client",
-        entity_id: clientId,
-        description: `Changed status of ${clientName} from ${old} to ${newStatus}`,
-        metadata: { old_status: old, new_status: newStatus, reason: reasonText },
-      });
+        await supabase.from("activity_logs").insert({
+          user_id: currentUser.id,
+          activity_type: "STATUS_CHANGE",
+          entity_type: "client",
+          entity_id: clientId,
+          description: `Changed status of ${clientName} from ${old} to ${newStatus}`,
+          metadata: { old_status: old, new_status: newStatus, reason: reasonText },
+        });
+      }
 
       setPendingReason(false);
       setReason("");

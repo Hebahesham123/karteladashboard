@@ -6,6 +6,7 @@ import { Check, Loader2, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 
 type Salesperson = { id: string; code: string; name: string };
 type Row = {
@@ -22,8 +23,15 @@ type Row = {
   product_name: string;
   current_status: string;
   notes: string | null;
+  notes_count?: number;
   assigned: boolean;
   assigned_note: string | null;
+};
+type NoteEntry = {
+  id: string;
+  note: string;
+  created_at: string;
+  user_name: string;
 };
 
 export function UrgentOrdersManager({
@@ -47,6 +55,9 @@ export function UrgentOrdersManager({
   const [busyId, setBusyId] = useState<string | null>(null);
   const [assignNote, setAssignNote] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
+  const [openNotesOrderId, setOpenNotesOrderId] = useState<string | null>(null);
+  const [notesHistory, setNotesHistory] = useState<Record<string, NoteEntry[]>>({});
+  const [loadingNotesHistory, setLoadingNotesHistory] = useState<Record<string, boolean>>({});
 
   const load = useCallback(async (targetSalespersonId?: string) => {
     const sid = targetSalespersonId ?? salespersonId;
@@ -131,6 +142,26 @@ export function UrgentOrdersManager({
     setBusyId(null);
   };
 
+  const loadOrderHistory = useCallback(async (orderId: string) => {
+    if (notesHistory[orderId] || loadingNotesHistory[orderId]) return;
+    setLoadingNotesHistory((prev) => ({ ...prev, [orderId]: true }));
+    try {
+      const res = await fetch(`/api/urgent-orders/admin/notes?orderId=${encodeURIComponent(orderId)}`, {
+        credentials: "include",
+      });
+      const json = await res.json();
+      if (!res.ok) {
+        setNotesHistory((prev) => ({ ...prev, [orderId]: [] }));
+        return;
+      }
+      setNotesHistory((prev) => ({ ...prev, [orderId]: (json.history ?? []) as NoteEntry[] }));
+    } catch {
+      setNotesHistory((prev) => ({ ...prev, [orderId]: [] }));
+    } finally {
+      setLoadingNotesHistory((prev) => ({ ...prev, [orderId]: false }));
+    }
+  }, [loadingNotesHistory, notesHistory]);
+
   return (
     <Card>
       <CardContent className="pt-6 space-y-4">
@@ -198,7 +229,54 @@ export function UrgentOrdersManager({
                   <td className="p-2">{r.client_name} <span className="text-xs text-muted-foreground">({r.partner_id})</span></td>
                   <td className="p-2">{r.product_name}</td>
                   <td className="p-2">{r.current_status}</td>
-                  <td className="p-2 max-w-[220px] truncate" title={r.notes ?? ""}>{r.notes ?? "—"}</td>
+                  <td className="p-2 max-w-[220px]">
+                    <Popover
+                      open={openNotesOrderId === r.id}
+                      onOpenChange={(nextOpen) => {
+                        setOpenNotesOrderId(nextOpen ? r.id : null);
+                        if (nextOpen) void loadOrderHistory(r.id);
+                      }}
+                    >
+                      <PopoverTrigger asChild>
+                        <button
+                          type="button"
+                          className="block w-full truncate max-w-[220px] text-start hover:underline text-blue-700 dark:text-blue-300"
+                          title={r.notes ?? ""}
+                        >
+                          {r.notes ?? (isRTL ? "لا توجد ملاحظات" : "No notes")}
+                          {(r.notes_count ?? 0) > 0 ? ` (${r.notes_count})` : ""}
+                        </button>
+                      </PopoverTrigger>
+                      <PopoverContent className="w-[min(92vw,30rem)]" align="start" dir={isRTL ? "rtl" : "ltr"}>
+                        <div className="space-y-2">
+                          <p className="text-xs font-medium text-muted-foreground">
+                            {isRTL ? `سجل ملاحظات المندوب (${notesHistory[r.id]?.length ?? 0})` : `Sales notes history (${notesHistory[r.id]?.length ?? 0})`}
+                          </p>
+                          {loadingNotesHistory[r.id] ? (
+                            <p className="text-xs text-muted-foreground">
+                              <Loader2 className="h-3.5 w-3.5 animate-spin inline me-1" />
+                              {isRTL ? "جارٍ تحميل السجل..." : "Loading history..."}
+                            </p>
+                          ) : (notesHistory[r.id]?.length ?? 0) === 0 ? (
+                            <p className="text-xs text-muted-foreground">
+                              {isRTL ? "لا توجد ملاحظات سابقة" : "No previous notes"}
+                            </p>
+                          ) : (
+                            <div className="space-y-2 max-h-64 overflow-y-auto pe-1">
+                              {(notesHistory[r.id] ?? []).map((entry) => (
+                                <div key={entry.id} className="rounded-md border border-border bg-background px-2.5 py-2">
+                                  <p className="text-sm whitespace-pre-wrap break-words">{entry.note}</p>
+                                  <p className="text-[11px] text-muted-foreground mt-1">
+                                    {entry.user_name} · {new Date(entry.created_at).toLocaleString()}
+                                  </p>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      </PopoverContent>
+                    </Popover>
+                  </td>
                   <td className="p-2">
                     <Input
                       value={assignNote[r.id] ?? r.assigned_note ?? ""}

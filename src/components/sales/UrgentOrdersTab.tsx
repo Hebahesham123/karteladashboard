@@ -5,7 +5,7 @@ import { Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { AddNoteDialog } from "@/components/clients/AddNoteDialog";
+import { OrderNoteDialog } from "@/components/sales/OrderNoteDialog";
 import { ClientStatusSelect } from "@/components/clients/ClientStatusSelect";
 import type { ClientStatus } from "@/types/database";
 
@@ -34,7 +34,7 @@ export function UrgentOrdersTab({ locale }: { locale: string }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [q, setQ] = useState("");
-  const [selectedClient, setSelectedClient] = useState<{ id: string; name: string } | null>(null);
+  const [selectedOrder, setSelectedOrder] = useState<{ id: string; clientName: string } | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -110,12 +110,13 @@ export function UrgentOrdersTab({ locale }: { locale: string }) {
                         compact
                         clientId={r.client_id}
                         clientName={r.client_name}
+                        orderId={r.id}
                         currentStatus={r.current_status as ClientStatus}
                         locale={locale}
                         onUpdated={(newStatus) => {
                           setRows((prev) =>
                             prev.map((x) =>
-                              x.client_id === r.client_id ? { ...x, current_status: newStatus } : x
+                              x.id === r.id ? { ...x, current_status: newStatus } : x
                             )
                           );
                         }}
@@ -136,7 +137,7 @@ export function UrgentOrdersTab({ locale }: { locale: string }) {
                       size="sm"
                       variant="outline"
                       className="h-7 text-xs shrink-0"
-                      onClick={() => setSelectedClient({ id: r.client_id, name: r.client_name })}
+                      onClick={() => setSelectedOrder({ id: r.id, clientName: r.client_name })}
                     >
                       {isRTL ? "ملاحظة" : "Note"}
                     </Button>
@@ -174,12 +175,13 @@ export function UrgentOrdersTab({ locale }: { locale: string }) {
                         compact
                         clientId={r.client_id}
                         clientName={r.client_name}
+                        orderId={r.id}
                         currentStatus={r.current_status as ClientStatus}
                         locale={locale}
                         onUpdated={(newStatus) => {
                           setRows((prev) =>
                             prev.map((x) =>
-                              x.client_id === r.client_id ? { ...x, current_status: newStatus } : x
+                              x.id === r.id ? { ...x, current_status: newStatus } : x
                             )
                           );
                         }}
@@ -192,7 +194,7 @@ export function UrgentOrdersTab({ locale }: { locale: string }) {
                         size="sm"
                         variant="outline"
                         className="h-7"
-                        onClick={() => setSelectedClient({ id: r.client_id, name: r.client_name })}
+                        onClick={() => setSelectedOrder({ id: r.id, clientName: r.client_name })}
                       >
                         {isRTL ? "ملاحظة" : "Note"}
                       </Button>
@@ -203,13 +205,13 @@ export function UrgentOrdersTab({ locale }: { locale: string }) {
             </tbody>
           </table>
         </div>
-        {selectedClient && (
-          <AddNoteDialog
-            client={selectedClient}
+        {selectedOrder && (
+          <OrderNoteDialog
+            order={selectedOrder}
             locale={locale}
-            onClose={() => setSelectedClient(null)}
+            onClose={() => setSelectedOrder(null)}
             onSuccess={() => {
-              setSelectedClient(null);
+              setSelectedOrder(null);
               void load();
             }}
           />

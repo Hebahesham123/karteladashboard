@@ -71,33 +71,91 @@ export async function GET(req: NextRequest) {
       const productIds = Array.from(new Set((orders ?? []).map((o) => o.product_id).filter(Boolean)));
       const orderIds = (orders ?? []).map((o) => o.id);
 
-      const [clientsRes, productsRes, assignedRes] = await Promise.all([
+      let assignedRows: any[] = [];
+      if (orderIds.length) {
+        const res = await db
+          .from("urgent_order_assignments")
+          .select("order_id, note, is_active, client_status")
+          .eq("salesperson_id", salespersonId)
+          .in("order_id", orderIds);
+        if (res.error && String(res.error.message ?? "").includes("client_status")) {
+          const fallback = await db
+            .from("urgent_order_assignments")
+            .select("order_id, note, is_active")
+            .eq("salesperson_id", salespersonId)
+            .in("order_id", orderIds);
+          if (fallback.error) throw new Error(fallback.error.message);
+          assignedRows = fallback.data ?? [];
+        } else {
+          if (res.error) throw new Error(res.error.message);
+          assignedRows = res.data ?? [];
+        }
+      }
+
+      const [clientsRes, productsRes] = await Promise.all([
         clientIds.length
           ? db.from("clients").select("id, name, partner_id, current_status, notes").in("id", clientIds)
           : Promise.resolve({ data: [], error: null }),
         productIds.length
           ? db.from("products").select("id, name").in("id", productIds)
           : Promise.resolve({ data: [], error: null }),
-        orderIds.length
-          ? db
-              .from("urgent_order_assignments")
-              .select("order_id, note, is_active")
-              .eq("salesperson_id", salespersonId)
-              .in("order_id", orderIds)
-          : Promise.resolve({ data: [], error: null }),
       ]);
       if (clientsRes.error) throw new Error(clientsRes.error.message);
       if (productsRes.error) throw new Error(productsRes.error.message);
-      if (assignedRes.error) throw new Error(assignedRes.error.message);
 
       const clientMap = new Map((clientsRes.data ?? []).map((c) => [c.id, c]));
       const productMap = new Map((productsRes.data ?? []).map((p) => [p.id, p]));
-      const assignedMap = new Map((assignedRes.data ?? []).map((a) => [a.order_id, a]));
+      const assignedMap = new Map((assignedRows ?? []).map((a) => [a.order_id, a]));
+      let latestOrderNote = new Map<string, string>();
+      let orderNoteCount = new Map<string, number>();
+      let latestClientNote = new Map<string, string>();
+      let clientNoteCount = new Map<string, number>();
+      if (orderIds.length) {
+        const { data: logs, error: logErr } = await db
+          .from("activity_logs")
+          .select("entity_id, metadata, created_at")
+          .eq("activity_type", "NOTE_ADDED")
+          .eq("entity_type", "order")
+          .in("entity_id", orderIds)
+          .order("created_at", { ascending: false });
+        if (logErr) throw new Error(logErr.message);
+        for (const log of logs ?? []) {
+          const oid = String((log as any).entity_id ?? "");
+          if (!oid) continue;
+          orderNoteCount.set(oid, (orderNoteCount.get(oid) ?? 0) + 1);
+          if (latestOrderNote.has(oid)) continue;
+          const msg = String((log as any)?.metadata?.note ?? "").trim();
+          if (!msg) continue;
+          latestOrderNote.set(oid, msg);
+        }
+      }
+      if (clientIds.length) {
+        const { data: clientLogs, error: clientLogErr } = await db
+          .from("activity_logs")
+          .select("entity_id, metadata, created_at")
+          .eq("activity_type", "NOTE_ADDED")
+          .eq("entity_type", "client")
+          .in("entity_id", clientIds)
+          .order("created_at", { ascending: false });
+        if (clientLogErr) throw new Error(clientLogErr.message);
+        for (const log of clientLogs ?? []) {
+          const cid = String((log as any).entity_id ?? "");
+          if (!cid) continue;
+          clientNoteCount.set(cid, (clientNoteCount.get(cid) ?? 0) + 1);
+          if (latestClientNote.has(cid)) continue;
+          const msg = String((log as any)?.metadata?.note ?? "").trim();
+          if (!msg) continue;
+          latestClientNote.set(cid, msg);
+        }
+      }
 
       return (orders ?? []).map((o) => {
         const c = clientMap.get(o.client_id);
         const p = productMap.get(o.product_id);
         const a = assignedMap.get(o.id);
+        const urgentStatus = (a as any)?.client_status as string | null | undefined;
+        const orderNote = latestOrderNote.get(o.id) ?? null;
+        const clientLogNote = latestClientNote.get(o.client_id) ?? null;
         return {
           id: o.id,
           invoice_ref: o.invoice_ref,
@@ -110,8 +168,9 @@ export async function GET(req: NextRequest) {
           client_name: c?.name ?? "—",
           partner_id: c?.partner_id ?? "—",
           product_name: p?.name ?? "—",
-          current_status: c?.current_status ?? "NEW",
-          notes: c?.notes ?? null,
+          current_status: (urgentStatus || c?.current_status || "NEW") as string,
+          notes: orderNote || clientLogNote || c?.notes || null,
+          notes_count: orderNote ? (orderNoteCount.get(o.id) ?? 0) : (clientNoteCount.get(o.client_id) ?? 0),
           assigned: Boolean(a?.is_active),
           assigned_note: a?.note ?? null,
         };
@@ -121,7 +180,7 @@ export async function GET(req: NextRequest) {
 
   return NextResponse.json(
     { salespersons: sps ?? [], rows },
-    { headers: { "Cache-Control": "private, max-age=15, stale-while-revalidate=30" } }
+    { headers: { "Cache-Control": "no-store, private" } }
   );
 }
 

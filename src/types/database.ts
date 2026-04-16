@@ -151,6 +151,7 @@ export interface Database {
           salesperson_id: string;
           assigned_by: string;
           note: string | null;
+          client_status: ClientStatus | null;
           is_active: boolean;
           created_at: string;
           updated_at: string;
