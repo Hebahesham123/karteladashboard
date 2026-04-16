@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 
 type Salesperson = { id: string; code: string; name: string };
 type Row = {
@@ -34,6 +35,20 @@ type NoteEntry = {
   user_name: string;
 };
 
+type OrderDetailPayload = {
+  order: { invoice_ref: unknown; branch: unknown; month: unknown; year: unknown };
+  client: { name: string; partner_id: string; current_status: string; notes: string | null } | null;
+  product: { name: string } | null;
+  salesperson: { code: string; name: string } | null;
+  assignment: { is_active: boolean; note: string | null; client_status: string | null } | null;
+};
+
+function detailFmt(v: unknown): string {
+  if (v == null || v === "") return "—";
+  if (typeof v === "object") return JSON.stringify(v, null, 2);
+  return String(v);
+}
+
 export function UrgentOrdersManager({
   locale,
   initialSalespersonId,
@@ -58,6 +73,10 @@ export function UrgentOrdersManager({
   const [openNotesOrderId, setOpenNotesOrderId] = useState<string | null>(null);
   const [notesHistory, setNotesHistory] = useState<Record<string, NoteEntry[]>>({});
   const [loadingNotesHistory, setLoadingNotesHistory] = useState<Record<string, boolean>>({});
+  const [detailOpen, setDetailOpen] = useState(false);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [detailError, setDetailError] = useState<string | null>(null);
+  const [detailData, setDetailData] = useState<OrderDetailPayload | null>(null);
 
   const load = useCallback(async (targetSalespersonId?: string) => {
     const sid = targetSalespersonId ?? salespersonId;
@@ -118,6 +137,11 @@ export function UrgentOrdersManager({
     );
   }, [rows, q]);
 
+  const selectedSalesperson = useMemo(
+    () => salespersons.find((s) => s.id === salespersonId),
+    [salespersons, salespersonId]
+  );
+
   const toggleAssign = async (row: Row) => {
     if (!salespersonId) return;
     setBusyId(row.id);
@@ -162,6 +186,82 @@ export function UrgentOrdersManager({
     }
   }, [loadingNotesHistory, notesHistory]);
 
+  const openOrderDetail = useCallback(
+    async (row: Row) => {
+      setDetailOpen(true);
+      setDetailLoading(true);
+      setDetailError(null);
+      setDetailData(null);
+      try {
+        const params = new URLSearchParams({ orderId: row.id });
+        if (salespersonId) params.set("salespersonId", salespersonId);
+        const res = await fetch(`/api/urgent-orders/admin/order?${params.toString()}`, { credentials: "include" });
+        const json = (await res.json()) as OrderDetailPayload & { error?: string };
+        if (!res.ok) {
+          setDetailError(json.error || "Failed");
+          return;
+        }
+        setDetailData({
+          order: json.order ?? {},
+          client: json.client ?? null,
+          product: json.product ?? null,
+          salesperson: json.salesperson ?? null,
+          assignment: json.assignment ?? null,
+        });
+      } catch {
+        setDetailError("Failed");
+      } finally {
+        setDetailLoading(false);
+      }
+    },
+    [salespersonId]
+  );
+
+  const detailRows = useMemo(() => {
+    if (!detailData) return [];
+    const o = detailData.order;
+    const c = detailData.client;
+    const p = detailData.product;
+    const sp = detailData.salesperson;
+    const a = detailData.assignment;
+    const monthNum = Number(o.month);
+    const yearNum = Number(o.year);
+    let periodLabel = "—";
+    if (Number.isFinite(monthNum) && monthNum >= 1 && monthNum <= 12 && Number.isFinite(yearNum) && yearNum >= 2000) {
+      periodLabel = new Date(yearNum, monthNum - 1, 1).toLocaleDateString(isRTL ? "ar-EG" : "en-US", {
+        month: "long",
+        year: "numeric",
+      });
+    }
+    const base: { label: string; value: string; mono?: boolean }[] = [
+      { label: isRTL ? "الفاتورة" : "Invoice", value: detailFmt(o.invoice_ref) },
+      { label: isRTL ? "الفرع" : "Branch", value: detailFmt(o.branch) },
+      { label: isRTL ? "الفترة" : "Period", value: periodLabel },
+    ];
+    if (c) {
+      base.push(
+        { label: isRTL ? "العميل" : "Client", value: c.name },
+        { label: isRTL ? "رقم الشريك" : "Partner ID", value: c.partner_id },
+        { label: isRTL ? "حالة العميل" : "Client status", value: c.current_status },
+        { label: isRTL ? "ملاحظات العميل" : "Client notes", value: c.notes?.trim() ? c.notes : "—" }
+      );
+    }
+    if (p) {
+      base.push({ label: isRTL ? "المنتج" : "Product", value: p.name });
+    }
+    if (sp) {
+      base.push({ label: isRTL ? "المندوب" : "Salesperson", value: `${sp.name} (${sp.code})` });
+    }
+    if (a) {
+      base.push(
+        { label: isRTL ? "تعيين عاجل (نشط)" : "Urgent assign. active", value: a.is_active ? (isRTL ? "نعم" : "Yes") : (isRTL ? "لا" : "No") },
+        { label: isRTL ? "حالة السطر (عاجل)" : "Urgent line status", value: detailFmt(a.client_status) },
+        { label: isRTL ? "ملاحظة التعيين" : "Assignment note", value: a.note?.trim() ? a.note : "—" }
+      );
+    }
+    return base;
+  }, [detailData, isRTL]);
+
   return (
     <Card>
       <CardContent className="pt-6 space-y-4">
@@ -191,6 +291,18 @@ export function UrgentOrdersManager({
           </div>
         )}
 
+        {!showSalespersonCards && salespersonId && (
+          <div className="rounded-lg border border-primary/20 bg-primary/5 px-4 py-3">
+            <p className="text-xs font-medium text-muted-foreground">{isRTL ? "المندوب" : "Salesperson"}</p>
+            <p className="text-lg font-semibold truncate">
+              {selectedSalesperson?.name ?? (loading ? "…" : "—")}
+            </p>
+            {selectedSalesperson && (
+              <p className="text-sm text-muted-foreground font-mono">{selectedSalesperson.code}</p>
+            )}
+          </div>
+        )}
+
         <div className="grid gap-3 md:grid-cols-3">
           <Input value={month} onChange={(e) => setMonth(e.target.value)} placeholder={isRTL ? "شهر" : "Month"} />
           <Input value={year} onChange={(e) => setYear(e.target.value)} placeholder={isRTL ? "سنة" : "Year"} />
@@ -201,7 +313,47 @@ export function UrgentOrdersManager({
         </div>
 
         <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder={isRTL ? "ابحث داخل الطلبات..." : "Search orders..."} />
+        <p className="text-xs text-muted-foreground">
+          {isRTL ? "انقر على الصف لعرض كل التفاصيل (عدا زر التعيين وملاحظات المندوب وحقل الملاحظة)." : "Click a row to see full details (except Assign, sales notes, and the assign note field)."}
+        </p>
         {error && <p className="text-sm text-destructive">{error}</p>}
+
+        <Dialog
+          open={detailOpen}
+          onOpenChange={(open) => {
+            setDetailOpen(open);
+            if (!open) {
+              setDetailData(null);
+              setDetailError(null);
+            }
+          }}
+        >
+          <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto" dir={isRTL ? "rtl" : "ltr"}>
+            <DialogHeader className={isRTL ? "text-end sm:text-end" : ""}>
+              <DialogTitle>{isRTL ? "تفاصيل الطلب" : "Order details"}</DialogTitle>
+              <DialogDescription>
+                {isRTL ? "ملخص مفيد لهذا السطر." : "A concise summary for this line."}
+              </DialogDescription>
+            </DialogHeader>
+            {detailLoading ? (
+              <div className="flex items-center gap-2 text-sm text-muted-foreground py-6">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                {isRTL ? "جارٍ التحميل…" : "Loading…"}
+              </div>
+            ) : detailError ? (
+              <p className="text-sm text-destructive">{detailError}</p>
+            ) : (
+              <dl className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-2 text-sm">
+                {detailRows.map((row) => (
+                  <div key={row.label} className="sm:col-span-2 grid grid-cols-1 sm:grid-cols-[minmax(0,11rem)_1fr] gap-1 border-b border-border/60 pb-2 last:border-0">
+                    <dt className="text-muted-foreground font-medium">{row.label}</dt>
+                    <dd className={`whitespace-pre-wrap break-words ${row.mono ? "font-mono text-xs" : ""}`}>{row.value}</dd>
+                  </div>
+                ))}
+              </dl>
+            )}
+          </DialogContent>
+        </Dialog>
 
         <div className="overflow-x-auto border rounded-lg">
           <table className="w-full text-sm">
@@ -218,8 +370,12 @@ export function UrgentOrdersManager({
             </thead>
             <tbody>
               {filtered.map((r) => (
-                <tr key={r.id} className="border-t">
-                  <td className="p-2">
+                <tr
+                  key={r.id}
+                  className="border-t cursor-pointer hover:bg-muted/40 transition-colors"
+                  onClick={() => void openOrderDetail(r)}
+                >
+                  <td className="p-2" onClick={(e) => e.stopPropagation()}>
                     <Button size="sm" variant={r.assigned ? "default" : "outline"} onClick={() => void toggleAssign(r)} disabled={busyId === r.id} className="h-7 gap-1">
                       {busyId === r.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : r.assigned ? <Check className="h-3.5 w-3.5" /> : null}
                       {r.assigned ? (isRTL ? "مُعيّن" : "Assigned") : (isRTL ? "تعيين" : "Assign")}
@@ -229,7 +385,7 @@ export function UrgentOrdersManager({
                   <td className="p-2">{r.client_name} <span className="text-xs text-muted-foreground">({r.partner_id})</span></td>
                   <td className="p-2">{r.product_name}</td>
                   <td className="p-2">{r.current_status}</td>
-                  <td className="p-2 max-w-[220px]">
+                  <td className="p-2 max-w-[220px]" onClick={(e) => e.stopPropagation()}>
                     <Popover
                       open={openNotesOrderId === r.id}
                       onOpenChange={(nextOpen) => {
@@ -277,7 +433,7 @@ export function UrgentOrdersManager({
                       </PopoverContent>
                     </Popover>
                   </td>
-                  <td className="p-2">
+                  <td className="p-2" onClick={(e) => e.stopPropagation()}>
                     <Input
                       value={assignNote[r.id] ?? r.assigned_note ?? ""}
                       onChange={(e) => setAssignNote((p) => ({ ...p, [r.id]: e.target.value }))}

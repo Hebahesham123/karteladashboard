@@ -161,8 +161,8 @@ export function FilterBar({
   ];
 
   const levels = [
-    { value: "GREEN", label: isRTL ? "طلبات أكثر من 100م" : "Orders ≥ 100m" },
     { value: "ORANGE", label: isRTL ? "طلبات أقل من 100م" : "Orders < 100m" },
+    { value: "GREEN", label: isRTL ? "طلبات أكثر من 100م" : "Orders ≥ 100m" },
     { value: "RED", label: isRTL ? "كارتيلا فقط — بدون أمتار" : "Cartela Only – No Meters" },
     { value: "INACTIVE", label: isRTL ? "لم يطلب هذا الشهر" : "No Orders This Month" },
   ];

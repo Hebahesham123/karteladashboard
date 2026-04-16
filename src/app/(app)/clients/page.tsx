@@ -389,7 +389,17 @@ export default function ClientsPage() {
       // Performance: skip per-client notes/status hydration here.
       // Notes are loaded in expanded log panel on demand.
 
-      combined.sort((a, b) => b.total_meters - a.total_meters);
+      const levelPriority: Record<OrderLevel, number> = {
+        ORANGE: 0,
+        GREEN: 1,
+        RED: 2,
+        INACTIVE: 3,
+      };
+      combined.sort((a, b) => {
+        const byLevel = (levelPriority[a.level] ?? 99) - (levelPriority[b.level] ?? 99);
+        if (byLevel !== 0) return byLevel;
+        return a.total_meters - b.total_meters;
+      });
       dataCache.set(cacheKey, combined);
       if (typeof window !== "undefined") {
         try { window.sessionStorage.setItem(persistKey, JSON.stringify(combined)); } catch {}

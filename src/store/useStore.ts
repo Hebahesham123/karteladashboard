@@ -54,11 +54,16 @@ const defaultFilters: FilterState = {
   selectedClient: null,
   selectedClients: [],
   selectedStatus: null,
-  selectedLevel: null,
+  /** Default: ORANGE = meter orders under 100m. User can pick "All levels" to clear. */
+  selectedLevel: "ORANGE",
   selectedProduct: null,
   selectedProducts: [],
   searchQuery: "",
 };
+
+/** One-shot: older persisted state used selectedLevel null as default; coerce to ORANGE once. */
+const SELECT_LEVEL_LEGACY_MIGRATION_KEY =
+  "cartela-selected-level-default-orange-v1";
 
 export const useStore = create<AppState>()(
   persist(
@@ -95,6 +100,42 @@ export const useStore = create<AppState>()(
     }),
     {
       name: "cartela-store-v2",
+      version: 1,
+      migrate: (persistedState, fromVersion) => {
+        const ps = persistedState as {
+          locale?: string;
+          sidebarCollapsed?: boolean;
+          filters?: Partial<FilterState>;
+        };
+        if (fromVersion === 0 && ps?.filters != null) {
+          const level = ps.filters.selectedLevel;
+          if (level === null || level === undefined) {
+            return {
+              locale: ps.locale ?? "ar",
+              sidebarCollapsed: ps.sidebarCollapsed ?? false,
+              filters: { ...defaultFilters, ...ps.filters, selectedLevel: "ORANGE" },
+            };
+          }
+        }
+        return persistedState as {
+          locale: string;
+          sidebarCollapsed: boolean;
+          filters: FilterState;
+        };
+      },
+      onRehydrateStorage: () => (rehydrated, error) => {
+        if (error || !rehydrated) return;
+        if (typeof window === "undefined") return;
+        try {
+          if (localStorage.getItem(SELECT_LEVEL_LEGACY_MIGRATION_KEY)) return;
+          if (rehydrated.filters.selectedLevel == null) {
+            useStore.getState().setFilter("selectedLevel", "ORANGE");
+          }
+          localStorage.setItem(SELECT_LEVEL_LEGACY_MIGRATION_KEY, "1");
+        } catch {
+          /* ignore quota / private mode */
+        }
+      },
       partialize: (state) => ({
         locale: state.locale,
         sidebarCollapsed: state.sidebarCollapsed,
