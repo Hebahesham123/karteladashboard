@@ -151,7 +151,7 @@ export async function fetchClientIdsForSalesperson(
   return { ids, error: lastError };
 }
 
-export type ClientOrderImportFields = { category: string; pricelist: string; invoice: string };
+export type ClientOrderImportFields = { product: string; category: string; pricelist: string; invoice: string };
 
 /** Per client: distinct category / pricelist / invoice_ref from meter lines in the given month (not كارتيلا). */
 export async function fetchClientMeterOrderImportFields(
@@ -161,7 +161,7 @@ export async function fetchClientMeterOrderImportFields(
   year: number,
   chunkSize = 120
 ): Promise<{ byClient: Map<string, ClientOrderImportFields>; error: string | null }> {
-  const meta = new Map<string, { cats: Set<string>; pls: Set<string>; invs: Set<string> }>();
+  const meta = new Map<string, { products: Set<string>; cats: Set<string>; pls: Set<string>; invs: Set<string> }>();
   let lastError: string | null = null;
 
   const joinSets = (s: Set<string>) =>
@@ -193,13 +193,11 @@ export async function fetchClientMeterOrderImportFields(
         products?: unknown;
       };
       const pname = productNameFromJoin(row);
-      if (!pname || isKartelaProductName(pname)) continue;
-      const qty = Number(row.quantity) || 0;
-      if (qty <= 0) continue;
 
       const cid = row.client_id;
-      if (!meta.has(cid)) meta.set(cid, { cats: new Set(), pls: new Set(), invs: new Set() });
+      if (!meta.has(cid)) meta.set(cid, { products: new Set(), cats: new Set(), pls: new Set(), invs: new Set() });
       const m = meta.get(cid)!;
+      if (pname) m.products.add(pname);
 
       const cat = String(row.category ?? "").trim();
       if (cat) m.cats.add(cat);
@@ -213,6 +211,7 @@ export async function fetchClientMeterOrderImportFields(
   const byClient = new Map<string, ClientOrderImportFields>();
   meta.forEach((v, k) => {
     byClient.set(k, {
+      product: joinSets(v.products),
       category: joinSets(v.cats),
       pricelist: joinSets(v.pls),
       invoice: joinSets(v.invs),

@@ -339,19 +339,20 @@ export default function ClientsPage() {
       // Chunked to avoid very large IN filters/timeouts.
       const idsForImport = combined.map((c) => c.id);
       if (idsForImport.length > 0) {
-        const mergedByClient = new Map<string, { category: string; pricelist: string; invoice: string }>();
+        const mergedByClient = new Map<string, { product: string; category: string; pricelist: string; invoice: string }>();
         const CHUNK = 800;
         for (let i = 0; i < idsForImport.length; i += CHUNK) {
           const chunk = idsForImport.slice(i, i + CHUNK);
           const { byClient } = await withTimeout(
             fetchClientMeterOrderImportFields(supabase, chunk, selectedMonth, selectedYear),
             9000
-          ).catch(() => ({ byClient: new Map<string, { category: string; pricelist: string; invoice: string }>() }));
+          ).catch(() => ({ byClient: new Map<string, { product: string; category: string; pricelist: string; invoice: string }>() }));
           byClient.forEach((v, k) => mergedByClient.set(k, v));
         }
         combined.forEach((c) => {
           const m = mergedByClient.get(c.id);
           if (!m) return;
+          if (!c.top_product_name && m.product) c.top_product_name = m.product;
           c.order_import_category = m.category || null;
           c.order_import_pricelist = m.pricelist || null;
           c.order_import_invoice = m.invoice || null;
