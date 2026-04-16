@@ -9,7 +9,7 @@ import {
 } from "recharts";
 import {
   Users, TrendingUp, TrendingDown, AlertTriangle, CheckCircle,
-  XCircle, Activity, ChevronRight, Clock, ShoppingCart,
+  XCircle, Activity, ChevronRight, Clock, ShoppingCart, Loader2,
 } from "lucide-react";
 import { KPICard } from "@/components/dashboard/KPICard";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -1032,6 +1032,54 @@ export default function DashboardPage() {
 
   return (
     <div className="space-y-3 md:space-y-5">
+      <AnimatePresence>
+        {isRefreshing && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[90] bg-background/55 backdrop-blur-sm flex items-center justify-center"
+          >
+            <motion.div
+              initial={{ y: 8, scale: 0.98 }}
+              animate={{ y: 0, scale: 1 }}
+              exit={{ y: 6, scale: 0.98 }}
+              transition={{ duration: 0.2 }}
+              className="w-[min(92vw,26rem)] rounded-2xl border border-border/70 bg-card/95 shadow-2xl overflow-hidden"
+            >
+              <div className="h-1.5 w-full bg-muted/60 overflow-hidden">
+                <motion.div
+                  className="h-full bg-primary"
+                  initial={{ x: "-100%" }}
+                  animate={{ x: "100%" }}
+                  transition={{ repeat: Infinity, duration: 1.2, ease: "easeInOut" }}
+                />
+              </div>
+              <div className="px-5 py-4 md:px-6 md:py-5">
+                <div className="flex items-start gap-3">
+                  <div className="h-10 w-10 rounded-xl bg-primary/10 border border-primary/20 flex items-center justify-center shrink-0">
+                    <Loader2 className="h-5 w-5 animate-spin text-primary" />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm md:text-base font-semibold leading-tight">
+                      {isRTL ? "جاري تحديث لوحة التحكم" : "Refreshing dashboard"}
+                    </p>
+                    <p className="text-xs text-muted-foreground mt-1">
+                      {isRTL ? "يتم تحميل أحدث الأرقام والمؤشرات..." : "Loading latest metrics and insights..."}
+                    </p>
+                    <div className="mt-3 flex items-center gap-1.5">
+                      <span className="h-1.5 w-1.5 rounded-full bg-primary animate-pulse" />
+                      <span className="h-1.5 w-1.5 rounded-full bg-primary/80 animate-pulse [animation-delay:180ms]" />
+                      <span className="h-1.5 w-1.5 rounded-full bg-primary/60 animate-pulse [animation-delay:360ms]" />
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       <PageBack locale={locale} fallbackHref="/dashboard" />
       {/* Header */}
       <div className="flex items-center justify-between gap-2 md:gap-4 flex-wrap">
