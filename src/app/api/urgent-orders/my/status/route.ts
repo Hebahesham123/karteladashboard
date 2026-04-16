@@ -26,9 +26,9 @@ async function requireSalesUser() {
   return { userId: user.id };
 }
 
-async function getSalespersonId(db: ReturnType<typeof createClient>, userId: string) {
+async function getSalespersonId(db: any, userId: string) {
   const { data: sp } = await db.from("salespersons").select("id").eq("user_id", userId).maybeSingle();
-  return sp?.id ?? null;
+  return (sp as { id?: string } | null)?.id ?? null;
 }
 
 const REASON_REQUIRED: ClientStatus[] = ["LOST", "CANCELLED"];

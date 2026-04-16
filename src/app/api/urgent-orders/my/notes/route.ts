@@ -25,12 +25,12 @@ async function requireSalesUser() {
   return { userId: user.id, fullName: profile.full_name ?? "—" };
 }
 
-async function getSalespersonId(db: ReturnType<typeof createClient>, userId: string) {
+async function getSalespersonId(db: any, userId: string) {
   const { data: sp } = await db.from("salespersons").select("id").eq("user_id", userId).maybeSingle();
-  return sp?.id ?? null;
+  return (sp as { id?: string } | null)?.id ?? null;
 }
 
-async function validateAssignment(db: ReturnType<typeof createClient>, orderId: string, salespersonId: string) {
+async function validateAssignment(db: any, orderId: string, salespersonId: string) {
   const { data: assignment, error } = await db
     .from("urgent_order_assignments")
     .select("id")
