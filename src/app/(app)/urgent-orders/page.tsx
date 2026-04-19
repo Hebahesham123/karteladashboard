@@ -60,21 +60,54 @@ export default function UrgentOrdersPage() {
       const monthNum = Number(month);
       const yearNum = Number(year);
       const loadMap: Record<string, SalesLoad> = Object.create(null);
-      const { data: perfRows, error } = await supabase
-        .from("salesperson_performance")
-        .select("salesperson_id, active_clients, total_meters")
-        .eq("month", monthNum)
-        .eq("year", yearNum)
-        .not("salesperson_id", "is", null);
+      // Prefer client_monthly_metrics (dashboard source; attributes clients even when
+      // orders.salesperson_id is null). Fall back to salesperson_performance if the query fails.
+      const pageSize = 1000;
+      let from = 0;
+      const cmmRows: { salesperson_id: string | null; total_meters: number | null }[] = [];
+      let cmmFailed = false;
+      while (active) {
+        const { data: batch, error } = await supabase
+          .from("client_monthly_metrics")
+          .select("salesperson_id, total_meters")
+          .eq("month", monthNum)
+          .eq("year", yearNum)
+          .not("salesperson_id", "is", null)
+          .range(from, from + pageSize - 1);
+        if (!active) return;
+        if (error) {
+          cmmFailed = true;
+          break;
+        }
+        if (!batch?.length) break;
+        cmmRows.push(...batch);
+        if (batch.length < pageSize) break;
+        from += pageSize;
+      }
       if (!active) return;
-      if (!error && perfRows?.length) {
-        perfRows.forEach((r: { salesperson_id: string | null; active_clients: number | null; total_meters: number | null }) => {
+      if (cmmFailed) {
+        const { data: perfRows } = await supabase
+          .from("salesperson_performance")
+          .select("salesperson_id, active_clients, total_meters")
+          .eq("month", monthNum)
+          .eq("year", yearNum)
+          .not("salesperson_id", "is", null);
+        if (!active) return;
+        (perfRows ?? []).forEach((r: { salesperson_id: string | null; active_clients: number | null; total_meters: number | null }) => {
           const sid = r.salesperson_id;
           if (!sid) return;
           loadMap[sid] = {
             orderCount: Number(r.active_clients) || 0,
             meters: Number(r.total_meters) || 0,
           };
+        });
+      } else {
+        cmmRows.forEach((r) => {
+          const sid = r.salesperson_id;
+          if (!sid) return;
+          if (!loadMap[sid]) loadMap[sid] = { orderCount: 0, meters: 0 };
+          loadMap[sid].orderCount += 1;
+          loadMap[sid].meters += Number(r.total_meters) || 0;
         });
       }
       setSalesLoad(loadMap);
