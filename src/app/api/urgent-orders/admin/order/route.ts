@@ -34,7 +34,9 @@ export async function GET(req: NextRequest) {
 
   const { data: orderRow, error: orderErr } = await db
     .from("orders")
-    .select("client_id, product_id, salesperson_id, invoice_ref, branch, month, year")
+    .select(
+      "client_id, product_id, salesperson_id, invoice_ref, branch, month, year, invoice_date, quantity, invoice_total, meter_breakdown, category, pricelist, created_at"
+    )
     .eq("id", orderId)
     .maybeSingle();
 
@@ -90,6 +92,13 @@ export async function GET(req: NextRequest) {
     branch: orderRow.branch,
     month: orderRow.month,
     year: orderRow.year,
+    invoice_date: (orderRow as { invoice_date?: string | null }).invoice_date ?? null,
+    quantity: (orderRow as { quantity?: number }).quantity ?? 0,
+    invoice_total: (orderRow as { invoice_total?: number }).invoice_total ?? 0,
+    category: (orderRow as { category?: string | null }).category ?? null,
+    pricelist: (orderRow as { pricelist?: string | null }).pricelist ?? null,
+    meter_breakdown: (orderRow as { meter_breakdown?: unknown }).meter_breakdown ?? null,
+    created_at: (orderRow as { created_at?: string }).created_at ?? null,
   };
 
   return NextResponse.json(

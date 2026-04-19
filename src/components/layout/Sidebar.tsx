@@ -16,6 +16,7 @@ import {
   Layers,
   UserSearch,
   Siren,
+  GitBranch,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -38,6 +39,7 @@ const navItems: NavItem[] = [
     role: "admin",
   },
   { labelEn: "Comparison", labelAr: "مقارنة", href: "/comparison", icon: BarChart3, role: "admin" },
+  { labelEn: "Branches", labelAr: "الفروع", href: "/branches", icon: GitBranch, role: "admin" },
   { labelEn: "My Clients", labelAr: "عملائي", href: "/sales", icon: TrendingUp, role: "sales" },
   { labelEn: "Kartela analysis", labelAr: "تحليل الكارتيلا", href: "/kartela-analysis", icon: Layers, role: "sales" },
   {

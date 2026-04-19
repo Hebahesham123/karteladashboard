@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient as createServerClient } from "@/lib/supabase/server";
 import { createClient } from "@supabase/supabase-js";
 import { getOrSetServerCache, invalidateServerCache } from "@/lib/serverResponseCache";
+import { isKartelaProductName, kartelaMetersFromMeterBreakdown } from "@/lib/kartelaProduct";
 
 function getServiceClient() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -51,12 +52,14 @@ export async function GET(req: NextRequest) {
   const monthKey = Number.isFinite(month) && month >= 1 && month <= 12 ? month : "all";
   const yearKey = Number.isFinite(year) && year >= 2000 && year <= 2100 ? year : "all";
   const rows = await getOrSetServerCache(
-    `urgent-admin:rows:${salespersonId}:${monthKey}:${yearKey}`,
+    `urgent-admin:rows:v2:${salespersonId}:${monthKey}:${yearKey}`,
     20_000,
     async () => {
       let orderQ = db
         .from("orders")
-        .select("id, client_id, product_id, salesperson_id, month, year, quantity, invoice_total, invoice_ref, category, pricelist")
+        .select(
+          "id, client_id, product_id, salesperson_id, month, year, quantity, invoice_total, invoice_ref, category, pricelist, branch, invoice_date, meter_breakdown, created_at"
+        )
         .eq("salesperson_id", salespersonId)
         .order("year", { ascending: false })
         .order("month", { ascending: false })
@@ -149,6 +152,19 @@ export async function GET(req: NextRequest) {
         }
       }
 
+      const branchByClientInvoice = new Map<string, string>();
+      for (const o of orders ?? []) {
+        const cid = o.client_id as string | null;
+        const inv = String(o.invoice_ref ?? "")
+          .trim()
+          .toLowerCase();
+        const b = String((o as { branch?: string | null }).branch ?? "").trim();
+        if (cid && inv && b) {
+          const k = `${cid}|${inv}`;
+          if (!branchByClientInvoice.has(k)) branchByClientInvoice.set(k, b);
+        }
+      }
+
       return (orders ?? []).map((o) => {
         const c = clientMap.get(o.client_id);
         const p = productMap.get(o.product_id);
@@ -156,18 +172,39 @@ export async function GET(req: NextRequest) {
         const urgentStatus = (a as any)?.client_status as string | null | undefined;
         const orderNote = latestOrderNote.get(o.id) ?? null;
         const clientLogNote = latestClientNote.get(o.client_id) ?? null;
+        const productName = p?.name ?? "—";
+        const invDate = (o as { invoice_date?: string | null }).invoice_date ?? null;
+        const createdAt = (o as { created_at?: string }).created_at ?? null;
+        const lineDateIso = invDate || (createdAt ? String(createdAt).slice(0, 10) : null);
+        let branchVal = String((o as { branch?: string | null }).branch ?? "").trim() || null;
+        if (!branchVal && o.client_id && o.invoice_ref) {
+          const k = `${o.client_id}|${String(o.invoice_ref).trim().toLowerCase()}`;
+          branchVal = branchByClientInvoice.get(k) ?? null;
+        }
+        const mb = (o as { meter_breakdown?: unknown }).meter_breakdown;
+        const fromBreakdown = kartelaMetersFromMeterBreakdown(mb);
+        const qty = Number(o.quantity) || 0;
+        const isKLine = isKartelaProductName(productName);
+        const kartela_qty_display: number | null = isKLine ? qty : fromBreakdown > 0 ? fromBreakdown : null;
         return {
           id: o.id,
           invoice_ref: o.invoice_ref,
           category: o.category,
           pricelist: o.pricelist,
+          branch: branchVal,
+          invoice_date: invDate,
+          line_date: lineDateIso,
+          created_at: createdAt,
           month: o.month,
           year: o.year,
-          quantity: Number(o.quantity) || 0,
+          quantity: qty,
           invoice_total: Number(o.invoice_total) || 0,
           client_name: c?.name ?? "—",
           partner_id: c?.partner_id ?? "—",
-          product_name: p?.name ?? "—",
+          product_name: productName,
+          is_kartela_line: isKLine,
+          kartela_qty_display,
+          meter_breakdown: mb ?? null,
           current_status: (urgentStatus || c?.current_status || "NEW") as string,
           notes: orderNote || clientLogNote || c?.notes || null,
           notes_count: orderNote ? (orderNoteCount.get(o.id) ?? 0) : (clientNoteCount.get(o.client_id) ?? 0),
@@ -195,7 +232,33 @@ export async function POST(req: NextRequest) {
     salespersonId?: string;
     note?: string;
     assigned?: boolean;
+    /** Persist assign note only (upsert), without toggling assignment. */
+    updateNoteOnly?: boolean;
   };
+
+  if (body.updateNoteOnly === true) {
+    if (!body.orderId || !body.salespersonId || typeof body.assigned !== "boolean") {
+      return NextResponse.json(
+        { error: "orderId, salespersonId and assigned (current state) are required" },
+        { status: 400 }
+      );
+    }
+    const { error } = await db.from("urgent_order_assignments").upsert(
+      {
+        order_id: body.orderId,
+        salesperson_id: body.salespersonId,
+        assigned_by: admin.userId,
+        note: (body.note ?? "").trim() || null,
+        is_active: body.assigned,
+      },
+      { onConflict: "order_id,salesperson_id" }
+    );
+    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    invalidateServerCache(`urgent-admin:rows:v2:${body.salespersonId}:`);
+    invalidateServerCache("urgent-my:");
+    return NextResponse.json({ ok: true });
+  }
+
   if (!body.orderId || !body.salespersonId || typeof body.assigned !== "boolean") {
     return NextResponse.json({ error: "orderId, salespersonId and assigned are required" }, { status: 400 });
   }
@@ -221,7 +284,7 @@ export async function POST(req: NextRequest) {
     if (error) return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
-  invalidateServerCache(`urgent-admin:rows:${body.salespersonId}:`);
+  invalidateServerCache(`urgent-admin:rows:v2:${body.salespersonId}:`);
   invalidateServerCache("urgent-my:");
 
   return NextResponse.json({ ok: true });

@@ -269,6 +269,8 @@ export function ExcelUpload({ locale }: { locale: string }) {
   const [progress, setProgress] = useState(0);
   const [errorMsg, setErrorMsg] = useState("");
   const [detectedLayout, setDetectedLayout] = useState<DetectedLayoutInfo | null>(null);
+  /** When true, POST /api/admin/clear-orders runs before upload (all order lines + upload history cleared). */
+  const [replaceAllOrders, setReplaceAllOrders] = useState(false);
 
   const colLabel = (idx: number) => {
     if (idx < 0) return "—";
@@ -328,12 +330,20 @@ export function ExcelUpload({ locale }: { locale: string }) {
           h.includes("فاتوره") ||
           h.includes("فاتورة") ||
           (h.includes("رقم") && h.includes("فاتور")) ||
-          h.includes("journalentry") ||
-          h.includes("account.move") ||
+          /** Do not match sheet title "Journal Entry (account.move)" — require line/invoice context */
+          (h.includes("journalentry") && (rawCell.includes("line") || rawCell.includes("invoice"))) ||
+          (h.includes("account.move") &&
+            (rawCell.includes("line") || rawCell.includes("invoice") || rawCell.includes("number"))) ||
           (h.includes("move") && (h.includes("name") || h.includes("ref"))) ||
           (h.includes("invoicelines") && h.includes("number")) ||
           (rawCell.includes("invoice lines") && rawCell.includes("number") && !rawCell.includes("quantity"))
         ) colInvoiceRef = idx;
+        // Odoo: "Invoice lines/Branch" (e.g. OnLine Branch) — before generic "product" on sibling columns
+        else if (
+          (rawCell.includes("invoice lines") && rawCell.includes("branch")) ||
+          (h.includes("invoicelines") && h.includes("branch"))
+        )
+          colBranch = idx;
         else if (h.includes("pricelist") || h.includes("pricelistname") || (h.includes("price") && h.includes("list")))
           colPricelist = idx;
         else if ((h.includes("product") || h.includes("منتج")) &&
@@ -359,11 +369,34 @@ export function ExcelUpload({ locale }: { locale: string }) {
         if (raw2.includes("pricelist") || raw2.includes("price list"))                          colPricelist   = idx;
         if (
           colInvoiceRef < 0 &&
-          ((raw2.includes("journal") && raw2.includes("entry")) ||
-            raw2.includes("account.move") ||
+          ((raw2.includes("journal") && raw2.includes("entry") && (raw2.includes("line") || raw2.includes("invoice"))) ||
+            (raw2.includes("account.move") &&
+              (raw2.includes("line") || raw2.includes("invoice") || raw2.includes("number"))) ||
             raw2.includes("account_move"))
         ) colInvoiceRef = idx;
+        if (raw2.includes("invoice lines") && raw2.includes("branch")) colBranch = idx;
       });
+    }
+
+    // Odoo Journal Entry export: headers may be on row 1+ (row 0 = title), or first cell empty — scan for Branch
+    if (colBranch < 0) {
+      for (let hr = 0; hr < Math.min(12, raw.length); hr++) {
+        const row = raw[hr];
+        if (!row?.length) continue;
+        for (let idx = 0; idx < row.length; idx++) {
+          const rawCell = String(row[idx] ?? "").toLowerCase();
+          const h = rawCell.replace(/[\s/_\-]/g, "");
+          if (
+            h.includes("branch") ||
+            h.includes("فرع") ||
+            (rawCell.includes("invoice") && rawCell.includes("line") && rawCell.includes("branch"))
+          ) {
+            colBranch = idx;
+            break;
+          }
+        }
+        if (colBranch >= 0) break;
+      }
     }
 
     // ── Data starts at row 0: infer Partner name / ID / Product when an extra blank column shifts columns right ──
@@ -750,6 +783,23 @@ export function ExcelUpload({ locale }: { locale: string }) {
     }
 
     try {
+      if (replaceAllOrders) {
+        const ok = window.confirm(
+          isRTL
+            ? "سيتم حذف جميع الطلبات الحالية وسجل الرفع قبل استيراد الملف. المستخدمون والعملاء والمنتجات تبقى. متابعة؟"
+            : "This will delete ALL existing order lines and upload history before importing. Users, clients, and products are kept. Continue?"
+        );
+        if (!ok) {
+          setStep("preview");
+          return;
+        }
+        setProgress(15);
+        const clr = await fetch("/api/admin/clear-orders", { method: "POST", credentials: "include" });
+        const clrJson = await clr.json();
+        if (!clr.ok || clrJson.error) {
+          throw new Error(clrJson.error || "Failed to clear existing orders");
+        }
+      }
       setProgress(30);
       const res = await fetch("/api/upload", {
         method: "POST",
@@ -782,6 +832,7 @@ export function ExcelUpload({ locale }: { locale: string }) {
     setProgress(0);
     setErrorMsg("");
     setDetectedLayout(null);
+    setReplaceAllOrders(false);
   };
 
   const validCount   = parsedData.filter((r) => r.isValid).length;
@@ -991,6 +1042,25 @@ export function ExcelUpload({ locale }: { locale: string }) {
             </div>
           )}
 
+          <label className="flex items-start gap-3 p-4 rounded-xl border border-amber-200 bg-amber-50/80 dark:bg-amber-950/20 dark:border-amber-800 cursor-pointer">
+            <input
+              type="checkbox"
+              className="mt-1 h-4 w-4 rounded border-border"
+              checked={replaceAllOrders}
+              onChange={(e) => setReplaceAllOrders(e.target.checked)}
+            />
+            <span className="text-sm leading-relaxed">
+              <span className="font-semibold text-amber-900 dark:text-amber-200">
+                {isRTL ? "استبدال كامل: حذف كل الطلبات ثم الرفع" : "Full replace: delete all orders, then upload"}
+              </span>
+              <span className="block text-amber-800/90 dark:text-amber-300/90 mt-1">
+                {isRTL
+                  ? "يحذف جميع سطور الطلبات وسجل الرفع (دفعات Excel) قبل إدراج بيانات الملف. الطلبات العاجلة المرتبطة تُزال تلقائياً."
+                  : "Removes every order line and Excel batch history before inserting this file. Linked urgent assignments are removed automatically."}
+              </span>
+            </span>
+          </label>
+
           {/* Legend */}
           <div className="flex items-center gap-3 flex-wrap text-xs text-muted-foreground px-1">
             <span className="font-semibold">{isRTL ? "دليل الألوان:" : "Color guide:"}</span>
@@ -1024,6 +1094,7 @@ export function ExcelUpload({ locale }: { locale: string }) {
                         isRTL ? "نوع العميل"    : "Cust. Type",
                         isRTL ? "كارتله"        : "Cartelah",
                         isRTL ? "المندوب"       : "Salesperson",
+                        isRTL ? "الفرع"         : "Branch",
                       ].map((h) => (
                         <th key={h} className="px-3 py-2.5 text-start font-semibold text-muted-foreground border-b border-border whitespace-nowrap">{h}</th>
                       ))}
@@ -1124,6 +1195,9 @@ export function ExcelUpload({ locale }: { locale: string }) {
                         </td>
                         {/* Salesperson */}
                         <td className="px-3 py-2 text-muted-foreground truncate max-w-[140px] text-xs">{row.salesperson_name || row.salesperson_code}</td>
+                        <td className="px-3 py-2 text-xs max-w-[120px] truncate" title={row.branch}>
+                          {row.branch ? row.branch : <span className="text-muted-foreground">—</span>}
+                        </td>
                       </tr>
                     ))}
                   </tbody>

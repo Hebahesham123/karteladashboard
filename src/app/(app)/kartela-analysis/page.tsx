@@ -2,7 +2,19 @@
 
 import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { ChevronDown, ChevronRight, Loader2, MessageSquare, RefreshCw } from "lucide-react";
+import {
+  ChevronDown,
+  ChevronRight,
+  Layers,
+  Loader2,
+  MessageSquare,
+  Package,
+  RefreshCw,
+  Ruler,
+  Table2,
+  UserCheck,
+  Users,
+} from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { useStore } from "@/store/useStore";
 import { ALLOWED_CUSTOMER_TYPES } from "@/lib/customerTypes";
@@ -11,7 +23,7 @@ import { formatNumber } from "@/lib/utils";
 import { FilterBar } from "@/components/shared/FilterBar";
 import { PageBack } from "@/components/layout/PageBack";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 
 interface MeterBreakdownLine {
@@ -47,6 +59,10 @@ interface ClientAgg {
   categoryLabels: string[];
   /** Distinct فاتوره / journal refs on lines for this client × family. */
   invoiceRefs: string[];
+  /** Distinct branch names from order lines (e.g. Odoo Invoice lines/Branch). */
+  branchLabels: string[];
+  /** Distinct calendar days (YYYY-MM-DD) from invoice_date or created_at on lines. */
+  dayDates: string[];
   /** Distinct Odoo pricelist names (e.g. VIP (EGP)). */
   pricelists: string[];
   comments: CommentEntry[];
@@ -66,7 +82,7 @@ interface FamilyRow {
   clients: ClientAgg[];
 }
 
-const KARTELA_CACHE_PREFIX = "kartela_analysis_v1:";
+const KARTELA_CACHE_PREFIX = "kartela_analysis_v2:";
 
 function parseMeterBreakdown(raw: unknown): MeterBreakdownLine[] {
   if (!raw || !Array.isArray(raw)) return [];
@@ -320,7 +336,7 @@ export default function KartelaAnalysisPage() {
             supabase
               .from("orders")
               .select(
-                "client_id, quantity, invoice_total, salesperson_id, meter_breakdown, category, invoice_ref, products(name)"
+                "client_id, quantity, invoice_total, salesperson_id, meter_breakdown, category, invoice_ref, branch, invoice_date, created_at, pricelist, products(name)"
               )
               .eq("month", month)
               .eq("year", year)
@@ -402,6 +418,8 @@ export default function KartelaAnalysisPage() {
             kartelaRevenue: 0,
             categoryLabels: [],
             invoiceRefs: [],
+            branchLabels: [],
+            dayDates: [],
             pricelists: [],
             comments: commentsByClient.get(cid) ?? [],
           });
@@ -433,16 +451,27 @@ export default function KartelaAnalysisPage() {
         const cat = row.category != null ? String(row.category).trim() : "";
         const iref = String(row.invoice_ref ?? "").trim();
         const pl = row.pricelist != null ? String(row.pricelist).trim() : "";
+        const brName = row.branch != null ? String(row.branch).trim() : "";
+        if (brName && !ac.branchLabels.includes(brName)) ac.branchLabels.push(brName);
+        const invDay =
+          row.invoice_date != null && String(row.invoice_date).trim() !== ""
+            ? String(row.invoice_date).trim().slice(0, 10)
+            : row.created_at != null && String(row.created_at).trim() !== ""
+              ? String(row.created_at).slice(0, 10)
+              : "";
+        if (invDay && !ac.dayDates.includes(invDay)) ac.dayDates.push(invDay);
+        if (iref && !ac.invoiceRefs.includes(iref)) ac.invoiceRefs.push(iref);
         if (kartela) {
           ac.kartelaQtySheet += qty;
           ac.kartelaRevenue += inv;
+          if (cat && !ac.categoryLabels.includes(cat)) ac.categoryLabels.push(cat);
+          if (pl && !ac.pricelists.includes(pl)) ac.pricelists.push(pl);
         } else {
           ac.meterQty += qty;
           ac.meterRevenue += inv;
           const br = parseMeterBreakdown(row.meter_breakdown);
           if (br.length) ac.meterBreakdown.push(...br);
           if (cat && !ac.categoryLabels.includes(cat)) ac.categoryLabels.push(cat);
-          if (iref && !ac.invoiceRefs.includes(iref)) ac.invoiceRefs.push(iref);
           if (pl && !ac.pricelists.includes(pl)) ac.pricelists.push(pl);
         }
       }
@@ -578,11 +607,16 @@ export default function KartelaAnalysisPage() {
     details: isRTL ? "تفاصيل العملاء" : "Client details",
     partner: isRTL ? "الرقم" : "Partner",
     client: isRTL ? "العميل" : "Client",
+    branch: isRTL ? "الفرع" : "Branch",
+    invoice: isRTL ? "فاتورة / مرجع" : "Invoice",
+    dayDate: isRTL ? "تاريخ اليوم" : "Day date",
     refresh: isRTL ? "تحديث" : "Refresh",
     empty: isRTL ? "لا توجد طلبات في هذه الفترة" : "No orders in this period",
     access: isRTL ? "غير مصرح" : "Access denied",
     meterBreakdownHint: isRTL ? "تفاصيل الأمتار حسب اللون / الصفة" : "Meters by color / variant",
     families: isRTL ? "عدد الخطوط" : "Families",
+    tableTitle: isRTL ? "ملخص الخطوط" : "Line summary",
+    tableSubtitle: isRTL ? "اضغط «تفاصيل» لعرض العملاء والفروع والفواتير." : "Use Details to open clients, branches, and invoices.",
   };
 
   const selectedProductBase = useMemo(() => {
@@ -649,19 +683,26 @@ export default function KartelaAnalysisPage() {
   }
 
   return (
-    <div className="space-y-5">
+    <div className="mx-auto max-w-[1600px] space-y-6 font-sans antialiased">
       <PageBack locale={locale} fallbackHref="/dashboard" />
 
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-bold">{t.title}</h1>
-          <p className="text-muted-foreground text-sm mt-1">{t.subtitle}</p>
-          <p className="text-xs text-muted-foreground mt-1 max-w-2xl">{t.imputeNote}</p>
-          <p className="text-xs text-muted-foreground mt-1">
-            {t.period}: <span className="font-semibold text-foreground">{monthLabel}</span>
-          </p>
+      <div className="flex flex-col gap-4 border-b border-border/60 pb-6 sm:flex-row sm:items-start sm:justify-between">
+        <div className="min-w-0 space-y-2">
+          <h1 className="text-2xl font-bold tracking-tight text-foreground sm:text-3xl">{t.title}</h1>
+          <p className="max-w-2xl text-sm leading-relaxed text-muted-foreground">{t.subtitle}</p>
+          <p className="max-w-2xl text-xs leading-relaxed text-muted-foreground/90">{t.imputeNote}</p>
+          <div className="inline-flex items-center gap-2 rounded-full border border-border/80 bg-muted/40 px-3 py-1 text-xs font-medium text-foreground">
+            <span className="text-muted-foreground">{t.period}</span>
+            <span className="tabular-nums">{monthLabel}</span>
+          </div>
         </div>
-        <Button variant="outline" size="sm" className="gap-2" onClick={() => fetchData()} disabled={loading}>
+        <Button
+          variant="outline"
+          size="sm"
+          className="h-9 shrink-0 gap-2 border-border/80 shadow-sm"
+          onClick={() => fetchData()}
+          disabled={loading}
+        >
           {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
           {t.refresh}
         </Button>
@@ -689,164 +730,254 @@ export default function KartelaAnalysisPage() {
       )}
 
       {loading ? (
-        <div className="flex justify-center py-16 text-muted-foreground gap-2">
-          <Loader2 className="h-5 w-5 animate-spin" />
+        <div className="flex flex-col items-center justify-center gap-3 rounded-xl border border-dashed border-border/80 bg-muted/20 py-20 text-muted-foreground">
+          <Loader2 className="h-8 w-8 animate-spin text-primary" />
+          <p className="text-sm">{isRTL ? "جارٍ التحميل…" : "Loading…"}</p>
         </div>
       ) : visibleFamilies.length === 0 ? (
-        <Card>
-          <CardContent className="py-10 text-center text-muted-foreground">{t.empty}</CardContent>
+        <Card className="border-dashed border-border/80 bg-muted/10">
+          <CardContent className="py-14 text-center text-muted-foreground">{t.empty}</CardContent>
         </Card>
       ) : (
-        <div className="space-y-4">
-          <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-            <Card><CardContent className="py-3"><p className="text-xs text-muted-foreground">{t.families}</p><p className="text-xl font-bold tabular-nums">{stats.families}</p></CardContent></Card>
-            <Card><CardContent className="py-3"><p className="text-xs text-muted-foreground">{t.meterQty}</p><p className="text-xl font-bold tabular-nums">{formatNumber(Math.round(stats.totalMeters))}</p></CardContent></Card>
-            <Card><CardContent className="py-3"><p className="text-xs text-muted-foreground">{t.kartelaQty}</p><p className="text-xl font-bold tabular-nums">{formatNumber(Math.round(stats.totalKartela))}</p></CardContent></Card>
-            <Card><CardContent className="py-3"><p className="text-xs text-muted-foreground">{t.clientsMeters}</p><p className="text-xl font-bold tabular-nums">{stats.clientsMeters.toLocaleString()}</p></CardContent></Card>
-            <Card><CardContent className="py-3"><p className="text-xs text-muted-foreground">{t.clientsKartela}</p><p className="text-xl font-bold tabular-nums">{stats.clientsKartela.toLocaleString()}</p></CardContent></Card>
+        <div className="space-y-5">
+          <div className="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-5">
+            {[
+              { label: t.families, value: stats.families, icon: Layers, accent: "bg-violet-500/15 text-violet-700 dark:text-violet-300" },
+              { label: t.meterQty, value: formatNumber(Math.round(stats.totalMeters)), icon: Ruler, accent: "bg-sky-500/15 text-sky-700 dark:text-sky-300" },
+              { label: t.kartelaQty, value: formatNumber(Math.round(stats.totalKartela)), icon: Package, accent: "bg-amber-500/15 text-amber-800 dark:text-amber-200" },
+              { label: t.clientsMeters, value: stats.clientsMeters.toLocaleString(), icon: Users, accent: "bg-emerald-500/15 text-emerald-800 dark:text-emerald-200" },
+              { label: t.clientsKartela, value: stats.clientsKartela.toLocaleString(), icon: UserCheck, accent: "bg-rose-500/15 text-rose-800 dark:text-rose-200" },
+            ].map((s) => (
+              <Card key={s.label} className="overflow-hidden border-border/70 shadow-sm transition-shadow hover:shadow-md">
+                <CardContent className="flex items-start gap-3 p-4">
+                  <div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-lg ${s.accent}`}>
+                    <s.icon className="h-5 w-5" aria-hidden />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p
+                      className={`text-[11px] font-medium text-muted-foreground sm:text-xs ${isRTL ? "tracking-normal" : "uppercase tracking-wide"}`}
+                    >
+                      {s.label}
+                    </p>
+                    <p className="mt-1 text-xl font-bold tabular-nums tracking-tight text-foreground sm:text-2xl">{s.value}</p>
+                  </div>
+                </CardContent>
+              </Card>
+            ))}
           </div>
-          <Card className="overflow-hidden">
-          <CardContent className="p-0">
-            <div className="overflow-x-auto" dir={isRTL ? "rtl" : "ltr"}>
-              <table className="w-full min-w-[900px] text-sm border-collapse border border-border">
-                <thead className="sticky top-0 z-10">
-                  <tr className="bg-muted/80 dark:bg-muted/60 backdrop-blur">
-                    <th className="border border-border p-3 text-start font-semibold align-bottom whitespace-nowrap">
-                      {t.family}
-                    </th>
-                    <th className="border border-border p-3 text-end font-semibold align-bottom whitespace-nowrap tabular-nums">
-                      {t.clientsMeters}
-                    </th>
-                    <th className="border border-border p-3 text-end font-semibold align-bottom whitespace-nowrap tabular-nums">
-                      {t.clientsKartela}
-                    </th>
-                    <th className="border border-border p-3 text-end font-semibold align-bottom whitespace-nowrap tabular-nums">
-                      {t.meterQty}
-                    </th>
-                    <th className="border border-border p-3 text-end font-semibold align-bottom whitespace-nowrap tabular-nums">
-                      {t.kartelaQty}
-                    </th>
-                    <th className="border border-border p-3 text-end font-semibold align-bottom whitespace-nowrap tabular-nums">
-                      {t.avgMeter}
-                    </th>
-                    <th className="border border-border p-3 text-center font-semibold align-bottom whitespace-nowrap w-px">
-                      {t.details}
-                    </th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {visibleFamilies.map((f) => (
-                    <Fragment key={f.baseName}>
-                      <tr className="hover:bg-muted/30 dark:hover:bg-muted/20 transition-colors odd:bg-background even:bg-muted/10">
-                        <td className="border border-border p-3 font-semibold align-top">
-                          {f.baseName}
-                        </td>
-                        <td className="border border-border p-3 text-end tabular-nums align-top">
-                          {f.clientsWithMeters}
-                        </td>
-                        <td className="border border-border p-3 text-end tabular-nums align-top">
-                          {f.clientsWithKartela}
-                        </td>
-                        <td className="border border-border p-3 text-end tabular-nums align-top">
-                          {formatNumber(Math.round(f.totalMeterQty))}
-                        </td>
-                        <td className="border border-border p-3 text-end tabular-nums align-top">
-                          {formatNumber(Math.round(f.totalKartelaQty))}
-                        </td>
-                        <td className="border border-border p-3 text-end tabular-nums align-top">
-                          {f.avgMeterUnitPrice != null
-                            ? Math.round(f.avgMeterUnitPrice).toLocaleString()
-                            : "—"}
-                        </td>
-                        <td className="border border-border p-3 align-top whitespace-nowrap">
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            className="gap-1 h-8 px-2"
-                            onClick={() => setExpanded((e) => (e === f.baseName ? null : f.baseName))}
-                          >
-                            {expanded === f.baseName ? (
-                              <ChevronDown className="h-4 w-4 shrink-0" />
-                            ) : (
-                              <ChevronRight className="h-4 w-4 shrink-0" />
-                            )}
-                            <span className="hidden sm:inline">{t.details}</span>
-                          </Button>
-                        </td>
-                      </tr>
-                      {expanded === f.baseName && (
-                        <tr>
-                          <td colSpan={7} className="border border-border border-t-0 p-0 bg-muted/20">
-                            <div className="overflow-x-auto p-3">
-                              <table className="w-full min-w-[640px] text-sm border-collapse border border-border caption-bottom">
-                                <thead>
-                                  <tr className="bg-muted/60 dark:bg-muted/40">
-                                    <th className="border border-border p-2 font-semibold text-start">
-                                      {t.partner}
-                                    </th>
-                                    <th className="border border-border p-2 font-semibold text-start">
-                                      {t.client}
-                                    </th>
-                                    <th className="border border-border p-2 font-semibold text-start">
-                                      {t.salesperson}
-                                    </th>
-                                    <th className="border border-border p-2 font-semibold text-end">
-                                      {t.meterQty}
-                                    </th>
-                                    <th className="border border-border p-2 font-semibold text-end">
-                                      {t.kartelaQty}
-                                    </th>
-                                  </tr>
-                                </thead>
-                                <tbody>
-                                  {f.clients.map((c) => (
-                                    <tr key={c.clientId} className="bg-background">
-                                      <td className="border border-border p-2 font-mono text-xs text-muted-foreground">
-                                        {c.partnerId}
-                                      </td>
-                                      <td className="border border-border p-2 font-medium max-w-[220px] truncate">
-                                        <CommentsHover
-                                          label={c.name}
-                                          comments={c.comments}
-                                          isRTL={isRTL}
-                                        />
-                                      </td>
-                                      <td
-                                        className="border border-border p-2 text-xs max-w-[140px] truncate"
-                                        title={c.salespersonName ?? ""}
-                                      >
-                                        <CommentsHover
-                                          label={c.salespersonName ?? "—"}
-                                          comments={c.comments}
-                                          isRTL={isRTL}
-                                        />
-                                      </td>
-                                      <td className="border border-border p-2 text-end">
-                                        <MeterBreakdownCell
-                                          total={c.meterQty}
-                                          lines={c.meterBreakdown}
-                                          isRTL={isRTL}
-                                          labelShow={t.meterBreakdownHint}
-                                        />
-                                      </td>
-                                      <td className="border border-border p-2 text-end tabular-nums">
-                                        {formatNumber(c.kartelaQty)}
-                                      </td>
-                                    </tr>
-                                  ))}
-                                </tbody>
-                              </table>
-                            </div>
+
+          <Card className="overflow-hidden border-border/80 shadow-md">
+            <CardHeader className="space-y-1 border-b border-border/60 bg-gradient-to-b from-muted/50 to-transparent px-4 py-4 sm:px-6">
+              <div className="flex items-center gap-2">
+                <Table2 className="h-5 w-5 text-primary" aria-hidden />
+                <CardTitle className="text-base font-semibold sm:text-lg">{t.tableTitle}</CardTitle>
+              </div>
+              <CardDescription className="text-xs sm:text-sm">{t.tableSubtitle}</CardDescription>
+            </CardHeader>
+            <CardContent className="p-0">
+              <div
+                className="max-h-[min(70vh,720px)] overflow-auto overscroll-contain"
+                dir={isRTL ? "rtl" : "ltr"}
+              >
+                <table className="w-full min-w-[900px] border-separate border-spacing-0 text-sm">
+                  <thead>
+                    <tr className="border-b border-border">
+                      <th
+                        className={`sticky top-0 z-20 border-b border-border bg-muted/95 px-4 py-3.5 text-start text-xs font-semibold text-muted-foreground shadow-[0_1px_0_0_hsl(var(--border))] backdrop-blur-sm dark:bg-muted/90 ${isRTL ? "tracking-normal" : "uppercase tracking-wide"}`}
+                      >
+                        {t.family}
+                      </th>
+                      <th
+                        className={`sticky top-0 z-20 border-b border-border bg-muted/95 px-3 py-3.5 text-end text-xs font-semibold text-muted-foreground tabular-nums shadow-[0_1px_0_0_hsl(var(--border))] backdrop-blur-sm dark:bg-muted/90 ${isRTL ? "tracking-normal" : "uppercase tracking-wide"}`}
+                      >
+                        {t.clientsMeters}
+                      </th>
+                      <th
+                        className={`sticky top-0 z-20 border-b border-border bg-muted/95 px-3 py-3.5 text-end text-xs font-semibold text-muted-foreground tabular-nums shadow-[0_1px_0_0_hsl(var(--border))] backdrop-blur-sm dark:bg-muted/90 ${isRTL ? "tracking-normal" : "uppercase tracking-wide"}`}
+                      >
+                        {t.clientsKartela}
+                      </th>
+                      <th
+                        className={`sticky top-0 z-20 border-b border-border bg-muted/95 px-3 py-3.5 text-end text-xs font-semibold text-muted-foreground tabular-nums shadow-[0_1px_0_0_hsl(var(--border))] backdrop-blur-sm dark:bg-muted/90 ${isRTL ? "tracking-normal" : "uppercase tracking-wide"}`}
+                      >
+                        {t.meterQty}
+                      </th>
+                      <th
+                        className={`sticky top-0 z-20 border-b border-border bg-muted/95 px-3 py-3.5 text-end text-xs font-semibold text-muted-foreground tabular-nums shadow-[0_1px_0_0_hsl(var(--border))] backdrop-blur-sm dark:bg-muted/90 ${isRTL ? "tracking-normal" : "uppercase tracking-wide"}`}
+                      >
+                        {t.kartelaQty}
+                      </th>
+                      <th
+                        className={`sticky top-0 z-20 border-b border-border bg-muted/95 px-3 py-3.5 text-end text-xs font-semibold text-muted-foreground tabular-nums shadow-[0_1px_0_0_hsl(var(--border))] backdrop-blur-sm dark:bg-muted/90 ${isRTL ? "tracking-normal" : "uppercase tracking-wide"}`}
+                      >
+                        {t.avgMeter}
+                      </th>
+                      <th
+                        className={`sticky top-0 z-20 w-[1%] whitespace-nowrap border-b border-border bg-muted/95 px-4 py-3.5 text-center text-xs font-semibold text-muted-foreground shadow-[0_1px_0_0_hsl(var(--border))] backdrop-blur-sm dark:bg-muted/90 ${isRTL ? "tracking-normal" : "uppercase tracking-wide"}`}
+                      >
+                        {t.details}
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-border/60">
+                    {visibleFamilies.map((f) => (
+                      <Fragment key={f.baseName}>
+                        <tr className="group transition-colors hover:bg-muted/50">
+                          <td className="px-4 py-3.5 align-middle">
+                            <span className="font-semibold text-foreground">{f.baseName}</span>
+                          </td>
+                          <td className="px-3 py-3.5 text-end tabular-nums text-muted-foreground">
+                            {f.clientsWithMeters}
+                          </td>
+                          <td className="px-3 py-3.5 text-end tabular-nums text-muted-foreground">
+                            {f.clientsWithKartela}
+                          </td>
+                          <td className="px-3 py-3.5 text-end tabular-nums font-medium text-foreground">
+                            {formatNumber(Math.round(f.totalMeterQty))}
+                          </td>
+                          <td className="px-3 py-3.5 text-end tabular-nums font-medium text-foreground">
+                            {formatNumber(Math.round(f.totalKartelaQty))}
+                          </td>
+                          <td className="px-3 py-3.5 text-end tabular-nums text-muted-foreground">
+                            {f.avgMeterUnitPrice != null ? Math.round(f.avgMeterUnitPrice).toLocaleString() : "—"}
+                          </td>
+                          <td className="px-3 py-2 align-middle text-center">
+                            <Button
+                              variant={expanded === f.baseName ? "secondary" : "outline"}
+                              size="sm"
+                              className="h-8 gap-1.5 px-3 text-xs font-medium shadow-sm"
+                              onClick={() => setExpanded((e) => (e === f.baseName ? null : f.baseName))}
+                            >
+                              {expanded === f.baseName ? (
+                                <ChevronDown className="h-3.5 w-3.5 shrink-0 opacity-80" />
+                              ) : (
+                                <ChevronRight className="h-3.5 w-3.5 shrink-0 opacity-80" />
+                              )}
+                              <span className="hidden sm:inline">{t.details}</span>
+                            </Button>
                           </td>
                         </tr>
-                      )}
-                    </Fragment>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </CardContent>
-        </Card>
+                        {expanded === f.baseName && (
+                          <tr className="bg-muted/25">
+                            <td colSpan={7} className="p-0">
+                              <div className="border-t border-border/60 p-3 sm:p-4">
+                                <div className="max-h-[min(50vh,520px)] overflow-auto overscroll-contain rounded-xl border border-border/70 bg-card shadow-inner">
+                                  <table className="w-full min-w-[980px] border-separate border-spacing-0 text-xs sm:text-sm">
+                                    <thead>
+                                      <tr className="border-b border-border/80">
+                                        <th
+                                          className={`sticky top-0 z-10 border-b border-border/80 bg-muted/95 px-3 py-2.5 text-start text-[11px] font-semibold text-muted-foreground shadow-[0_1px_0_0_hsl(var(--border))] backdrop-blur-sm dark:bg-muted/90 ${isRTL ? "tracking-normal" : "uppercase tracking-wide"}`}
+                                        >
+                                          {t.partner}
+                                        </th>
+                                        <th
+                                          className={`sticky top-0 z-10 border-b border-border/80 bg-muted/95 px-3 py-2.5 text-start text-[11px] font-semibold text-muted-foreground shadow-[0_1px_0_0_hsl(var(--border))] backdrop-blur-sm dark:bg-muted/90 ${isRTL ? "tracking-normal" : "uppercase tracking-wide"}`}
+                                        >
+                                          {t.client}
+                                        </th>
+                                        <th
+                                          className={`sticky top-0 z-10 border-b border-border/80 bg-muted/95 px-3 py-2.5 text-start text-[11px] font-semibold text-muted-foreground shadow-[0_1px_0_0_hsl(var(--border))] backdrop-blur-sm dark:bg-muted/90 ${isRTL ? "tracking-normal" : "uppercase tracking-wide"}`}
+                                        >
+                                          {t.branch}
+                                        </th>
+                                        <th
+                                          className={`sticky top-0 z-10 border-b border-border/80 bg-muted/95 px-3 py-2.5 text-start text-[11px] font-semibold text-muted-foreground shadow-[0_1px_0_0_hsl(var(--border))] backdrop-blur-sm dark:bg-muted/90 ${isRTL ? "tracking-normal" : "uppercase tracking-wide"}`}
+                                        >
+                                          {t.invoice}
+                                        </th>
+                                        <th
+                                          className={`sticky top-0 z-10 whitespace-nowrap border-b border-border/80 bg-muted/95 px-3 py-2.5 text-start text-[11px] font-semibold text-muted-foreground shadow-[0_1px_0_0_hsl(var(--border))] backdrop-blur-sm dark:bg-muted/90 ${isRTL ? "tracking-normal" : "uppercase tracking-wide"}`}
+                                        >
+                                          {t.dayDate}
+                                        </th>
+                                        <th
+                                          className={`sticky top-0 z-10 border-b border-border/80 bg-muted/95 px-3 py-2.5 text-start text-[11px] font-semibold text-muted-foreground shadow-[0_1px_0_0_hsl(var(--border))] backdrop-blur-sm dark:bg-muted/90 ${isRTL ? "tracking-normal" : "uppercase tracking-wide"}`}
+                                        >
+                                          {t.salesperson}
+                                        </th>
+                                        <th
+                                          className={`sticky top-0 z-10 border-b border-border/80 bg-muted/95 px-3 py-2.5 text-end text-[11px] font-semibold text-muted-foreground shadow-[0_1px_0_0_hsl(var(--border))] backdrop-blur-sm dark:bg-muted/90 ${isRTL ? "tracking-normal" : "uppercase tracking-wide"}`}
+                                        >
+                                          {t.meterQty}
+                                        </th>
+                                        <th
+                                          className={`sticky top-0 z-10 border-b border-border/80 bg-muted/95 px-3 py-2.5 text-end text-[11px] font-semibold text-muted-foreground shadow-[0_1px_0_0_hsl(var(--border))] backdrop-blur-sm dark:bg-muted/90 ${isRTL ? "tracking-normal" : "uppercase tracking-wide"}`}
+                                        >
+                                          {t.kartelaQty}
+                                        </th>
+                                      </tr>
+                                    </thead>
+                                    <tbody className="divide-y divide-border/50">
+                                      {f.clients.map((c) => {
+                                        const branchesShow = [...c.branchLabels].sort((a, b) =>
+                                          a.localeCompare(b, undefined, { sensitivity: "base" })
+                                        );
+                                        const daysShow = [...c.dayDates].sort();
+                                        return (
+                                          <tr key={c.clientId} className="bg-background/80 transition-colors hover:bg-muted/30">
+                                            <td className="px-3 py-2.5 font-mono text-[11px] text-muted-foreground">
+                                              {c.partnerId}
+                                            </td>
+                                            <td className="px-3 py-2.5 font-medium max-w-[220px]">
+                                              <CommentsHover label={c.name} comments={c.comments} isRTL={isRTL} />
+                                            </td>
+                                            <td
+                                              className="max-w-[140px] px-3 py-2.5 align-top text-xs text-muted-foreground"
+                                              title={branchesShow.join(", ")}
+                                            >
+                                              {branchesShow.length ? (
+                                                <span className="line-clamp-3 break-words">{branchesShow.join(", ")}</span>
+                                              ) : (
+                                                "—"
+                                              )}
+                                            </td>
+                                            <td
+                                              className="max-w-[160px] px-3 py-2.5 align-top font-mono text-[11px] text-muted-foreground"
+                                              title={c.invoiceRefs.join(", ")}
+                                            >
+                                              {c.invoiceRefs.length ? (
+                                                <span className="line-clamp-4 break-all">{c.invoiceRefs.join(", ")}</span>
+                                              ) : (
+                                                "—"
+                                              )}
+                                            </td>
+                                            <td
+                                              className="max-w-[120px] px-3 py-2.5 align-top text-xs tabular-nums text-muted-foreground whitespace-pre-wrap"
+                                              title={daysShow.join(", ")}
+                                            >
+                                              {daysShow.length ? daysShow.join(", ") : "—"}
+                                            </td>
+                                            <td className="max-w-[140px] truncate px-3 py-2.5 text-xs" title={c.salespersonName ?? ""}>
+                                              <CommentsHover label={c.salespersonName ?? "—"} comments={c.comments} isRTL={isRTL} />
+                                            </td>
+                                            <td className="px-3 py-2.5 text-end">
+                                              <MeterBreakdownCell
+                                                total={c.meterQty}
+                                                lines={c.meterBreakdown}
+                                                isRTL={isRTL}
+                                                labelShow={t.meterBreakdownHint}
+                                              />
+                                            </td>
+                                            <td className="px-3 py-2.5 text-end tabular-nums font-medium text-foreground">
+                                              {formatNumber(c.kartelaQty)}
+                                            </td>
+                                          </tr>
+                                        );
+                                      })}
+                                    </tbody>
+                                  </table>
+                                </div>
+                              </div>
+                            </td>
+                          </tr>
+                        )}
+                      </Fragment>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </CardContent>
+          </Card>
         </div>
       )}
     </div>

@@ -46,13 +46,11 @@ import { useStore } from "@/store/useStore";
 import { getLevelBadgeColor, formatNumber, cn } from "@/lib/utils";
 import { ALLOWED_CUSTOMER_TYPES, allowedCustomerTypesList } from "@/lib/customerTypes";
 import { dataCache } from "@/lib/dataCache";
-import {
-  fetchClientLatestOrderLineFields,
-} from "@/lib/orderImportMeta";
+import type { ClientOrderImportFields } from "@/lib/orderImportMeta";
 import { isKartelaProductName, kartelaFamilyBaseKey } from "@/lib/kartelaProduct";
 import type { ClientStatus, OrderLevel } from "@/types/database";
 
-const CLIENTS_PERSIST_PREFIX = "clients_boot_v1:";
+const CLIENTS_PERSIST_PREFIX = "clients_boot_v6:";
 
 interface ClientRow {
   id: string;
@@ -79,6 +77,8 @@ interface ClientRow {
   order_import_category: string | null;
   order_import_pricelist: string | null;
   order_import_invoice: string | null;
+  order_import_branch: string | null;
+  order_import_day_date: string | null;
 }
 
 function withOrderImportFields(c: ClientRow): ClientRow {
@@ -87,7 +87,17 @@ function withOrderImportFields(c: ClientRow): ClientRow {
     order_import_category: c.order_import_category ?? null,
     order_import_pricelist: c.order_import_pricelist ?? null,
     order_import_invoice: c.order_import_invoice ?? null,
+    order_import_branch: c.order_import_branch ?? null,
+    order_import_day_date: c.order_import_day_date ?? null,
   };
+}
+
+/** Day date column from view/API ISO timestamps (order_import_line_at, invoice_date, created_at). */
+function formatImportLineAt(iso: string | null | undefined): string | null {
+  if (iso == null || String(iso).trim() === "") return null;
+  const t = Date.parse(String(iso));
+  if (Number.isNaN(t)) return null;
+  return new Date(t).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
 }
 
 export default function ClientsPage() {
@@ -153,7 +163,7 @@ export default function ClientsPage() {
     const selectedMonth = filters.selectedMonth ?? (now.getMonth() + 1);
     const selectedYear  = filters.selectedYear  ?? now.getFullYear();
     const spFilter      = salespersonId || filters.selectedSalesperson;
-    const cacheKey = `clients_v11:${selectedYear}-${selectedMonth}-${spFilter || "all"}`;
+    const cacheKey = `clients_v16:${selectedYear}-${selectedMonth}-${spFilter || "all"}`;
     const persistKey = `${CLIENTS_PERSIST_PREFIX}${cacheKey}`;
 
     // ── Global session cache hit → render instantly ──────────────────────
@@ -192,7 +202,9 @@ export default function ClientsPage() {
           new Promise<T>((_, reject) => setTimeout(() => reject(new Error(`timeout-${ms}ms`)), ms)),
         ]);
 
-      const VIEW_COLS = "client_id, partner_id, client_name, current_status, total_meters, total_revenue, order_count, customer_type, level, cartela_count, top_product_cartela, top_product_name, salesperson_id, salesperson_name, salesperson_code, month, year, kartela_month, kartela_year, kartela_cross_month";
+      const VIEW_COLS =
+        "client_id, partner_id, client_name, current_status, total_meters, total_revenue, order_count, customer_type, level, cartela_count, top_product_cartela, top_product_name, salesperson_id, salesperson_name, salesperson_code, month, year, kartela_month, kartela_year, kartela_cross_month, " +
+        "order_import_category, order_import_pricelist, order_import_invoice, order_import_branch, order_import_line_at, order_import_invoice_date, order_import_created_at";
       const wantInactive = filters.selectedLevel === "INACTIVE";
 
       const buildViewQ = () => {
@@ -309,9 +321,15 @@ export default function ClientsPage() {
           kartela_month:       ord.kartela_month ? Number(ord.kartela_month) : null,
           kartela_year:        ord.kartela_year  ? Number(ord.kartela_year)  : null,
           kartela_cross_month: Boolean(ord.kartela_cross_month),
-          order_import_category: null,
-          order_import_pricelist: null,
-          order_import_invoice: null,
+          order_import_category: (ord as { order_import_category?: string | null }).order_import_category ?? null,
+          order_import_pricelist: (ord as { order_import_pricelist?: string | null }).order_import_pricelist ?? null,
+          order_import_invoice: (ord as { order_import_invoice?: string | null }).order_import_invoice ?? null,
+          order_import_branch: (ord as { order_import_branch?: string | null }).order_import_branch ?? null,
+          order_import_day_date: formatImportLineAt(
+            (ord as { order_import_line_at?: string | null }).order_import_line_at ??
+              (ord as { order_import_invoice_date?: string | null }).order_import_invoice_date ??
+              (ord as { order_import_created_at?: string | null }).order_import_created_at
+          ),
         });
       });
 
@@ -333,21 +351,60 @@ export default function ClientsPage() {
             order_import_category: null,
             order_import_pricelist: null,
             order_import_invoice: null,
+            order_import_branch: null,
+            order_import_day_date: null,
           });
         });
       }
 
       // Step C: row-exact data per client from ONE latest order line in selected month.
-      const idsForImport = combined.map((c) => c.id);
+      // Uses server API + service role so Odoo lines with a different orders.salesperson_id still appear (RLS-safe).
+      let importFieldsError: string | null = null;
+      const fetchOrderImportFieldsMap = async (
+        ids: string[],
+        mode: { month: number; year: number } | { fallback: true }
+      ): Promise<Map<string, ClientOrderImportFields>> => {
+        if (ids.length === 0) return new Map();
+        const body =
+          "fallback" in mode
+            ? { clientIds: ids, fallback: true }
+            : { clientIds: ids, month: mode.month, year: mode.year };
+        const res = await fetch("/api/clients/order-import-fields", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify(body),
+        });
+        const json = (await res.json()) as { fields?: Record<string, ClientOrderImportFields>; error?: string };
+        if (!res.ok) {
+          const msg = json.error || res.statusText || "order-import-fields failed";
+          importFieldsError = importFieldsError ? `${importFieldsError}; ${msg}` : msg;
+          return new Map();
+        }
+        const fields = json.fields ?? {};
+        return new Map(Object.entries(fields));
+      };
+
+      // Prefer columns from client_monthly_metrics (DB view); API only fills gaps.
+      const idsForImport = combined
+        .filter(
+          (c) =>
+            !c.order_import_category ||
+            !c.order_import_pricelist ||
+            !c.order_import_invoice ||
+            !c.order_import_branch ||
+            !c.order_import_day_date
+        )
+        .map((c) => c.id);
       if (idsForImport.length > 0) {
-        const mergedByClient = new Map<string, { product: string; category: string; pricelist: string; invoice: string }>();
+        const mergedByClient = new Map<string, ClientOrderImportFields>();
         const CHUNK = 800;
         for (let i = 0; i < idsForImport.length; i += CHUNK) {
           const chunk = idsForImport.slice(i, i + CHUNK);
-          const { byClient } = await withTimeout(
-            fetchClientLatestOrderLineFields(supabase, chunk, { month: selectedMonth, year: selectedYear }),
-            9000
-          ).catch(() => ({ byClient: new Map<string, { product: string; category: string; pricelist: string; invoice: string }>() }));
+          const byClient = await withTimeout(
+            fetchOrderImportFieldsMap(chunk, { month: selectedMonth, year: selectedYear }),
+            12000
+          ).catch(() => new Map<string, ClientOrderImportFields>());
           byClient.forEach((v, k) => mergedByClient.set(k, v));
         }
         combined.forEach((c) => {
@@ -357,22 +414,34 @@ export default function ClientsPage() {
           c.order_import_category = m.category || null;
           c.order_import_pricelist = m.pricelist || null;
           c.order_import_invoice = m.invoice || null;
+          c.order_import_branch = m.branch || null;
+          c.order_import_day_date = m.dayDate || null;
         });
 
         // Step D: fallback for rows still empty in selected month.
         // Still one latest line per client, but from any month (keeps row-consistent data).
+        // Include missing branch/day so we still fetch a fallback line from another month when
+        // the selected month only had sparse Odoo columns on the "latest" row.
         const missingIds = combined
-          .filter((c) => !c.top_product_name || !c.order_import_category || !c.order_import_pricelist || !c.order_import_invoice)
+          .filter(
+            (c) =>
+              !c.top_product_name ||
+              !c.order_import_category ||
+              !c.order_import_pricelist ||
+              !c.order_import_invoice ||
+              !c.order_import_branch ||
+              !c.order_import_day_date
+          )
           .map((c) => c.id);
         if (missingIds.length > 0) {
-          const fallbackMap = new Map<string, { product: string; category: string; pricelist: string; invoice: string }>();
+          const fallbackMap = new Map<string, ClientOrderImportFields>();
           const FALLBACK_CHUNK = 500;
           for (let i = 0; i < missingIds.length; i += FALLBACK_CHUNK) {
             const chunk = missingIds.slice(i, i + FALLBACK_CHUNK);
-            const { byClient } = await withTimeout(
-              fetchClientLatestOrderLineFields(supabase, chunk),
+            const byClient = await withTimeout(
+              fetchOrderImportFieldsMap(chunk, { fallback: true }),
               12000
-            ).catch(() => ({ byClient: new Map<string, { product: string; category: string; pricelist: string; invoice: string }>() }));
+            ).catch(() => new Map<string, ClientOrderImportFields>());
             byClient.forEach((v, k) => fallbackMap.set(k, v));
           }
           combined.forEach((c) => {
@@ -382,6 +451,8 @@ export default function ClientsPage() {
             if (!c.order_import_category && f.category) c.order_import_category = f.category;
             if (!c.order_import_pricelist && f.pricelist) c.order_import_pricelist = f.pricelist;
             if (!c.order_import_invoice && f.invoice) c.order_import_invoice = f.invoice;
+            if (!c.order_import_branch && f.branch) c.order_import_branch = f.branch;
+            if (!c.order_import_day_date && f.dayDate) c.order_import_day_date = f.dayDate;
           });
         }
       }
@@ -406,13 +477,23 @@ export default function ClientsPage() {
       }
       setClients(combined);
 
+      const partialMsgs: string[] = [];
       if (expectedCount > 0 && viewRows.length < expectedCount) {
-        setPartialLoadInfo(
+        partialMsgs.push(
           isRTL
             ? `تم تحميل ${viewRows.length.toLocaleString()} من أصل ${expectedCount.toLocaleString()} عميل. أعد التحميل لاستكمال الباقي.`
             : `Loaded ${viewRows.length.toLocaleString()} of ${expectedCount.toLocaleString()} clients. Refresh to load the remainder.`
         );
-      } else if (combined.length === 0) {
+      }
+      if (importFieldsError) {
+        partialMsgs.push(
+          (isRTL ? "تعذر تحميل أعمدة الاستيراد (فئة/سعر/فاتورة/فرع/تاريخ): " : "Could not load import columns (category/pricelist/invoice/branch/date): ") +
+            importFieldsError
+        );
+      }
+      if (partialMsgs.length) setPartialLoadInfo(partialMsgs.join("\n\n"));
+
+      if (combined.length === 0) {
         setFetchError(isRTL ? "التحميل بطيء حالياً، حاول مرة أخرى خلال ثوانٍ." : "Loading is currently slow, please retry in a few seconds.");
       }
 
@@ -442,6 +523,8 @@ export default function ClientsPage() {
     importCategory: isRTL ? "التصنيف" : "Category",
     importPricelist: isRTL ? "قائمة الأسعار" : "Pricelist",
     importInvoice: isRTL ? "فاتوره" : "Invoice",
+    importDayDate: isRTL ? "تاريخ اليوم" : "Day date",
+    importBranch: isRTL ? "الفرع" : "Branch",
     meters: isRTL ? "الأمتار" : "Meters",
     cartela: isRTL ? "كارتله" : "Cartelah",
     date: isRTL ? "الشهر" : "Month",
@@ -520,7 +603,7 @@ export default function ClientsPage() {
   };
 
   const invalidateClientCache = () => {
-    dataCache.invalidate("clients_v11:");
+    dataCache.invalidate("clients_v16:");
   };
   const toggleRow = (id: string) => setSelectedRows(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
   const toggleAll = (rows: ClientRow[]) => setSelectedRows(prev => prev.size === rows.length ? new Set() : new Set(rows.map(r => r.id)));
@@ -582,6 +665,25 @@ export default function ClientsPage() {
             <span className="text-[10px] text-muted-foreground">{y}</span>
           </div>
         );
+      },
+    },
+    // ── Order line: calendar day & branch (latest meter line, this month) ─
+    {
+      accessorKey: "order_import_day_date",
+      header: t.importDayDate,
+      cell: ({ getValue }) => {
+        const v = getValue() as string | null;
+        if (!v) return <span className="text-muted-foreground text-xs">—</span>;
+        return <span className="text-xs tabular-nums">{v}</span>;
+      },
+    },
+    {
+      accessorKey: "order_import_branch",
+      header: t.importBranch,
+      cell: ({ getValue }) => {
+        const v = getValue() as string | null;
+        if (!v) return <span className="text-muted-foreground text-xs">—</span>;
+        return <span className="text-xs max-w-[140px] truncate" title={v}>{v}</span>;
       },
     },
     // ── Partner ID ────────────────────────────────────────────────────
@@ -939,6 +1041,8 @@ export default function ClientsPage() {
     const ws = utils.json_to_sheet(
       rows.map((c) => ({
         [t.date]: c.month ? `${isRTL ? MONTH_NAMES_AR[c.month - 1] : MONTH_NAMES_EN[c.month - 1]} ${c.year}` : "",
+        [t.importDayDate]: c.order_import_day_date || "",
+        [t.importBranch]: c.order_import_branch || "",
         [t.partner]: c.partner_id,
         [t.client]: c.name,
         [isRTL ? "نوع العميل" : "Customer Type"]: c.customer_type || "",
@@ -1119,8 +1223,7 @@ export default function ClientsPage() {
             variant="outline"
             size="sm"
             onClick={() => {
-              dataCache.invalidate("clients_v10:");
-              dataCache.invalidate("clients_v11:");
+              dataCache.invalidate("clients_v16:");
               fetchClients(true);
             }}
             className="gap-1.5 md:gap-2 h-8 text-xs md:text-sm px-2 md:px-3"
@@ -1337,16 +1440,16 @@ export default function ClientsPage() {
           </div>
 
 
-          {/* Table */}
-          <div className="overflow-x-auto">
-            <table className="w-full border-separate border-spacing-0 border border-border/80 rounded-lg overflow-hidden">
+          {/* Inner scroll so thead stays visible; API loads order fields (RLS no longer hides Odoo lines). */}
+          <div className="max-h-[min(72vh,calc(100vh-11rem))] overflow-y-auto overflow-x-auto rounded-b-lg">
+            <table className="w-full border-separate border-spacing-0 border border-border/80 border-t-0 overflow-hidden min-w-[960px]">
               <thead>
                 {table.getHeaderGroups().map((headerGroup) => (
-                  <tr key={headerGroup.id} className="bg-muted/40">
+                  <tr key={headerGroup.id}>
                     {headerGroup.headers.map((header) => (
                       <th
                         key={header.id}
-                        className="px-4 py-3 text-start text-xs font-semibold text-muted-foreground uppercase tracking-wider border-b border-border/80 border-e border-border/70 last:border-e-0"
+                        className="sticky top-0 z-20 px-4 py-3 text-start text-xs font-semibold text-muted-foreground uppercase tracking-wider border-b border-border/80 border-e border-border/70 last:border-e-0 bg-muted/95 backdrop-blur-sm supports-[backdrop-filter]:bg-muted/85 shadow-[0_1px_0_0_hsl(var(--border))]"
                       >
                         {header.isPlaceholder ? null : (
                           <div
@@ -1376,7 +1479,7 @@ export default function ClientsPage() {
                 {loading ? (
                   Array(10).fill(0).map((_, i) => (
                     <tr key={i} className="border-b border-border/50">
-                      {Array(14).fill(0).map((_, j) => (
+                      {Array(16).fill(0).map((_, j) => (
                         <td key={j} className="px-4 py-3">
                           <div className="h-4 bg-muted rounded animate-pulse" />
                         </td>

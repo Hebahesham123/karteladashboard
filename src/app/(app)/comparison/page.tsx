@@ -12,10 +12,24 @@ import { useStore } from "@/store/useStore";
 import { formatNumber } from "@/lib/utils";
 import { dataCache } from "@/lib/dataCache";
 import { ALLOWED_CUSTOMER_TYPES } from "@/lib/customerTypes";
+import { isKartelaProductName, kartelaFamilyBaseKey } from "@/lib/kartelaProduct";
 
 type CompareMode = "product" | "salesperson" | "client" | "kartela" | "net-profit";
 type Period = { month: number; year: number };
-type CompareRow = { key: string; left: number; right: number; diff: number; growth: number };
+/** left/mid/right = period1/2/3 values; in 2-month mode mid is unused (0). */
+type CompareRow = {
+  key: string;
+  left: number;
+  mid: number;
+  right: number;
+  /** Period 2 vs period 1 (two-month: vs period 2). */
+  diff12: number;
+  growth12: number;
+  /** Period 3 vs period 2 (three-month mode only). */
+  diff23: number;
+  growth23: number;
+};
+type MonthCountMode = "two" | "three";
 type TypeKind = "all" | "category" | "pricelist" | "customer_type";
 
 type OrderJoinRow = {
@@ -28,18 +42,11 @@ type OrderJoinRow = {
   salespersons: { name: string | null } | null;
 };
 
-function isKartelaProductName(name: string | null | undefined): boolean {
-  if (!name) return false;
-  const lower = name.toLowerCase();
-  if (lower.includes("kartela") || lower.includes("cartela")) return true;
-  return name.includes("كارتيلا");
-}
-
 function aggregateOrderRows(rows: OrderJoinRow[], mode: CompareMode, isRTL: boolean): Map<string, number> {
   const out = new Map<string, number>();
   for (const row of rows) {
     const pName = row.products?.name;
-    const isK = isKartelaProductName(pName);
+    const isK = isKartelaProductName(String(pName ?? ""));
     const qty = Number(row.quantity) || 0;
     const rev = Number(row.invoice_total) || 0;
     const cName = row.clients?.name;
@@ -134,7 +141,72 @@ type DetailOrderRow = {
   client_name: string;
   product_name: string;
   salesperson: string;
+  branch: string;
+  dayDate: string;
+  kartelaQty: number;
 };
+
+type DetailOrderContext = {
+  branchByClientInvoice: Map<string, string>;
+  branchByClient: Map<string, string>;
+  kartelaByClientBase: Map<string, number>;
+};
+
+function normalizeInvoiceKey(ref: string): string {
+  return ref.trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+/** When explicit كارتله rows are missing, some uploads only store cartela in meter_breakdown labels. */
+function kartelaQtyFromMeterBreakdown(raw: unknown): number {
+  if (!raw || !Array.isArray(raw)) return 0;
+  let sum = 0;
+  for (const x of raw) {
+    const label = String((x as { label?: string; name?: string })?.label ?? (x as { name?: string }).name ?? "").trim();
+    const v = Number((x as { meters?: number }).meters) || 0;
+    if (v <= 0 || !label) continue;
+    if (
+      /كارت|kartela|cartela/i.test(label) ||
+      (/color\s*:/i.test(label) && /كارت/i.test(label)) ||
+      /كرتون|carton/i.test(label)
+    ) {
+      sum += v;
+    }
+  }
+  return sum;
+}
+
+function formatDayDate(iso: string | null | undefined): string {
+  if (!iso) return "—";
+  const t = Date.parse(iso);
+  if (Number.isNaN(t)) return cellDisplay(iso);
+  return new Date(t).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+}
+
+function buildDetailOrderContext(rawRows: any[]): DetailOrderContext {
+  const branchByClientInvoice = new Map<string, string>();
+  const branchByClient = new Map<string, string>();
+  const kartelaByClientBase = new Map<string, number>();
+
+  for (const r of rawRows) {
+    const cid = String(r.client_id ?? "").trim();
+    const inv = normalizeInvoiceKey(String(r.invoice_ref ?? ""));
+    const b = String(r.branch ?? "").trim();
+    if (cid && b) {
+      branchByClient.set(cid, b);
+      if (inv) branchByClientInvoice.set(`${cid}|${inv}`, b);
+    }
+
+    const p = Array.isArray(r.products) ? r.products[0] : r.products;
+    const pname = String(p?.name ?? "").trim();
+    if (!cid || !isKartelaProductName(pname)) continue;
+    const qty = Math.round(Number(r.quantity)) || 0;
+    const base = kartelaFamilyBaseKey(pname);
+    const k = `${cid}|${base}`;
+    kartelaByClientBase.set(k, (kartelaByClientBase.get(k) ?? 0) + qty);
+  }
+
+  return { branchByClientInvoice, branchByClient, kartelaByClientBase };
+}
 
 /** Short label for client column: after a `/` use the rest (e.g. trade name), else first word. */
 function primaryClientLabel(full: string): string {
@@ -152,7 +224,7 @@ function cellDisplay(v: string | null | undefined): string {
 }
 
 const DETAIL_SELECT =
-  "invoice_ref, quantity, products(name), clients(name), salespersons(name, code)";
+  "invoice_ref, quantity, client_id, branch, invoice_date, created_at, meter_breakdown, products(name), clients(name), salespersons(name, code)";
 const DETAIL_PAGE = 800;
 const DETAIL_MAX_NET_PROFIT = 2500;
 const DETAIL_MAX_OTHER = 8000;
@@ -167,13 +239,13 @@ async function getKartelaProductIds(supabase: ReturnType<typeof createClient>): 
   const { data, error } = await supabase.from("products").select("id, name");
   if (error) throw new Error(error.message);
   const ids = (data ?? [])
-    .filter((r: { name: string | null }) => isKartelaProductName(r.name))
+    .filter((r: { name: string | null }) => isKartelaProductName(String(r.name ?? "")))
     .map((r: { id: string }) => r.id);
   kartelaProductIdCache = { ids, at: Date.now() };
   return ids;
 }
 
-function mapOrderRawToDetail(r: any): DetailOrderRow {
+function mapOrderRawToDetail(r: any, ctx: DetailOrderContext): DetailOrderRow {
   const p = Array.isArray(r.products) ? r.products[0] : r.products;
   const c = Array.isArray(r.clients) ? r.clients[0] : r.clients;
   const sp = Array.isArray(r.salespersons) ? r.salespersons[0] : r.salespersons;
@@ -183,12 +255,38 @@ function mapOrderRawToDetail(r: any): DetailOrderRow {
   const codePart = cellDisplay(sp?.code);
   const spLine =
     namePart === "—" && codePart === "—" ? "—" : codePart === "—" ? namePart : `${namePart} (${codePart})`;
+
+  const cid = String(r.client_id ?? "").trim();
+  const inv = normalizeInvoiceKey(String(r.invoice_ref ?? ""));
+  const branchRaw = String(r.branch ?? "").trim();
+  const branch =
+    (cid && inv ? ctx.branchByClientInvoice.get(`${cid}|${inv}`) : undefined) ??
+    (cid ? ctx.branchByClient.get(cid) : undefined) ??
+    (branchRaw ? branchRaw : "—");
+
+  const dayIso = r.invoice_date ?? r.created_at ?? null;
+  const dayDate = formatDayDate(typeof dayIso === "string" ? dayIso : dayIso != null ? String(dayIso) : null);
+
+  const pnameStr = String(productName ?? "").trim();
+  const qty = Math.round(Number(r.quantity)) || 0;
+  let kartelaQty = 0;
+  if (isKartelaProductName(pnameStr)) {
+    kartelaQty = qty;
+  } else {
+    const base = kartelaFamilyBaseKey(pnameStr);
+    const fromMap = cid ? ctx.kartelaByClientBase.get(`${cid}|${base}`) ?? 0 : 0;
+    kartelaQty = fromMap > 0 ? fromMap : kartelaQtyFromMeterBreakdown(r.meter_breakdown);
+  }
+
   return {
     invoice_ref: cellDisplay(r.invoice_ref),
-    meters: Math.round(Number(r.quantity)) || 0,
+    meters: qty,
     client_name: cellDisplay(clientName),
     product_name: cellDisplay(productName),
     salesperson: spLine,
+    branch: branch === "—" ? "—" : branch,
+    dayDate,
+    kartelaQty,
   };
 }
 
@@ -196,21 +294,22 @@ async function paginateOrderDetailQuery(
   runRange: (from: number, to: number) => any,
   maxRows: number
 ): Promise<DetailOrderRow[]> {
-  const out: DetailOrderRow[] = [];
+  const rawAll: any[] = [];
   let from = 0;
-  while (out.length < maxRows) {
+  while (rawAll.length < maxRows) {
     const to = from + DETAIL_PAGE - 1;
     const { data, error } = await runRange(from, to);
     if (error) throw new Error(error.message);
     const raw = (data ?? []) as any[];
     for (const r of raw) {
-      out.push(mapOrderRawToDetail(r));
-      if (out.length >= maxRows) return out;
+      rawAll.push(r);
+      if (rawAll.length >= maxRows) break;
     }
     if (raw.length < DETAIL_PAGE) break;
     from += DETAIL_PAGE;
   }
-  return out;
+  const ctx = buildDetailOrderContext(rawAll);
+  return rawAll.map((r) => mapOrderRawToDetail(r, ctx));
 }
 
 async function fetchOrderLinesForLine(
@@ -228,7 +327,7 @@ async function fetchOrderLinesForLine(
   const useCustomerType = useTypeFilters && typeKind === "customer_type";
 
   const detailSelectForQuery = useCustomerType
-    ? "invoice_ref, quantity, products(name), clients!inner(name, customer_type), salespersons(name, code)"
+    ? "invoice_ref, quantity, client_id, branch, invoice_date, created_at, meter_breakdown, products(name), clients!inner(name, customer_type), salespersons(name, code)"
     : DETAIL_SELECT;
 
   const baseOrders = () => {
@@ -326,6 +425,9 @@ type DetailTableLabels = {
   detailOrders: string;
   detailNone: string;
   colInvoice: string;
+  colKartela: string;
+  colBranch: string;
+  colDayDate: string;
   colMeters: string;
   colClient: string;
   colProduct: string;
@@ -372,21 +474,40 @@ function ComparisonOrderDetailTable({
           <span className="tabular-nums text-muted-foreground font-normal">({list.length})</span>
         </p>
       </div>
-      <div className="overflow-x-auto max-h-[min(50vh,22rem)] overscroll-contain">
-        <table className="w-full min-w-[560px] text-sm border-collapse">
-          <thead className="sticky top-0 z-10 bg-muted/90 backdrop-blur-sm supports-[backdrop-filter]:bg-muted/75">
+      <div className="max-h-[min(70vh,720px)] overflow-auto overscroll-contain">
+        <table className="w-full min-w-0 text-sm border-separate border-spacing-0">
+          <thead>
             <tr className="text-[11px] uppercase tracking-wide text-muted-foreground">
-              <th className="px-3 py-2.5 text-start font-semibold border-b border-border/80">{labels.colInvoice}</th>
-              <th className="px-3 py-2.5 text-end font-semibold border-b border-border/80 whitespace-nowrap">{labels.colMeters}</th>
-              <th className="px-3 py-2.5 text-start font-semibold border-b border-border/80 min-w-[8rem]">{labels.colClient}</th>
-              <th className="px-3 py-2.5 text-start font-semibold border-b border-border/80">{labels.colProduct}</th>
-              <th className="px-3 py-2.5 text-start font-semibold border-b border-border/80">{labels.colSp}</th>
+              <th className="sticky top-0 z-20 bg-muted/95 backdrop-blur-sm supports-[backdrop-filter]:bg-muted/80 px-3 py-2.5 text-start font-semibold border-b border-border/80 shadow-[0_1px_0_0_hsl(var(--border))]">
+                {labels.colInvoice}
+              </th>
+              <th className="sticky top-0 z-20 bg-muted/95 backdrop-blur-sm supports-[backdrop-filter]:bg-muted/80 px-3 py-2.5 text-end font-semibold border-b border-border/80 whitespace-nowrap shadow-[0_1px_0_0_hsl(var(--border))]">
+                {labels.colKartela}
+              </th>
+              <th className="sticky top-0 z-20 bg-muted/95 backdrop-blur-sm supports-[backdrop-filter]:bg-muted/80 px-3 py-2.5 text-start font-semibold border-b border-border/80 shadow-[0_1px_0_0_hsl(var(--border))]">
+                {labels.colBranch}
+              </th>
+              <th className="sticky top-0 z-20 bg-muted/95 backdrop-blur-sm supports-[backdrop-filter]:bg-muted/80 px-3 py-2.5 text-start font-semibold border-b border-border/80 whitespace-nowrap shadow-[0_1px_0_0_hsl(var(--border))]">
+                {labels.colDayDate}
+              </th>
+              <th className="sticky top-0 z-20 bg-muted/95 backdrop-blur-sm supports-[backdrop-filter]:bg-muted/80 px-3 py-2.5 text-end font-semibold border-b border-border/80 whitespace-nowrap shadow-[0_1px_0_0_hsl(var(--border))]">
+                {labels.colMeters}
+              </th>
+              <th className="sticky top-0 z-20 bg-muted/95 backdrop-blur-sm supports-[backdrop-filter]:bg-muted/80 px-3 py-2.5 text-start font-semibold border-b border-border/80 min-w-[8rem] shadow-[0_1px_0_0_hsl(var(--border))]">
+                {labels.colClient}
+              </th>
+              <th className="sticky top-0 z-20 bg-muted/95 backdrop-blur-sm supports-[backdrop-filter]:bg-muted/80 px-3 py-2.5 text-start font-semibold border-b border-border/80 shadow-[0_1px_0_0_hsl(var(--border))]">
+                {labels.colProduct}
+              </th>
+              <th className="sticky top-0 z-20 bg-muted/95 backdrop-blur-sm supports-[backdrop-filter]:bg-muted/80 px-3 py-2.5 text-start font-semibold border-b border-border/80 shadow-[0_1px_0_0_hsl(var(--border))]">
+                {labels.colSp}
+              </th>
             </tr>
           </thead>
           <tbody className="divide-y divide-border/60">
             {list.length === 0 ? (
               <tr>
-                <td className="px-3 py-8 text-center text-muted-foreground text-sm" colSpan={5}>
+                <td className="px-3 py-8 text-center text-muted-foreground text-sm" colSpan={8}>
                   {labels.detailNone}
                 </td>
               </tr>
@@ -400,6 +521,11 @@ function ComparisonOrderDetailTable({
                 return (
                   <tr key={rk} className="hover:bg-muted/35 transition-colors">
                     <td className="px-3 py-2 align-middle font-mono text-xs text-foreground/90">{d.invoice_ref}</td>
+                    <td className="px-3 py-2 align-middle text-end tabular-nums text-foreground">
+                      {d.kartelaQty > 0 ? d.kartelaQty.toLocaleString() : "—"}
+                    </td>
+                    <td className="px-3 py-2 align-middle text-sm text-foreground/90 break-words max-w-[10rem]">{d.branch}</td>
+                    <td className="px-3 py-2 align-middle text-sm text-foreground/90 whitespace-nowrap">{d.dayDate}</td>
                     <td className="px-3 py-2 align-middle text-end tabular-nums font-medium text-foreground">
                       {d.meters.toLocaleString()}
                     </td>
@@ -442,19 +568,20 @@ export default function ComparisonPage() {
   const months = isRTL ? MONTHS_AR : MONTHS_EN;
 
   const now = new Date();
-  const currentMonth = now.getMonth() === 0 ? 12 : now.getMonth();
   const currentYear = now.getMonth() === 0 ? now.getFullYear() - 1 : now.getFullYear();
-  const defaultLeftMonth = filters.selectedMonth ?? currentMonth;
-  const defaultLeftYear = filters.selectedYear ?? currentYear;
-  const defaultRightMonth = defaultLeftMonth === 12 ? 1 : defaultLeftMonth + 1;
-  const defaultRightYear = defaultLeftMonth === 12 ? defaultLeftYear + 1 : defaultLeftYear;
+  const defaultYear = filters.selectedYear ?? currentYear;
 
   const [mode, setMode] = useState<CompareMode>("product");
-  const [left, setLeft] = useState<Period>({ month: defaultLeftMonth, year: defaultLeftYear });
-  const [right, setRight] = useState<Period>({ month: defaultRightMonth, year: defaultRightYear });
+  const [monthCount, setMonthCount] = useState<MonthCountMode>("three");
+  const isThreeMonths = monthCount === "three";
+  /** Default periods: January, February, March (same year). */
+  const [period1, setPeriod1] = useState<Period>({ month: 1, year: defaultYear });
+  const [period2, setPeriod2] = useState<Period>({ month: 2, year: defaultYear });
+  const [period3, setPeriod3] = useState<Period>({ month: 3, year: defaultYear });
   const [rows, setRows] = useState<CompareRow[]>([]);
-  const [leftTotal, setLeftTotal] = useState(0);
-  const [rightTotal, setRightTotal] = useState(0);
+  const [total1, setTotal1] = useState(0);
+  const [total2, setTotal2] = useState(0);
+  const [total3, setTotal3] = useState(0);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const hasAutoLoadedRef = useRef(false);
@@ -465,6 +592,7 @@ export default function ComparisonPage() {
   const [typeOptionsLoading, setTypeOptionsLoading] = useState(false);
   const [expandedKey, setExpandedKey] = useState<string | null>(null);
   const [detailLeft, setDetailLeft] = useState<DetailOrderRow[]>([]);
+  const [detailMid, setDetailMid] = useState<DetailOrderRow[]>([]);
   const [detailRight, setDetailRight] = useState<DetailOrderRow[]>([]);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState<string | null>(null);
@@ -476,12 +604,20 @@ export default function ComparisonPage() {
   );
 
   const t = {
-    title: isRTL ? "مقارنة شهرين" : "Month Comparison",
-    subtitle: isRTL
-      ? "قارن شهرين جنباً إلى جنب حسب المنتج أو المندوب أو العميل أو الكارتيلا أو صافي الربح."
-      : "Compare two months side by side by product, salesperson, client, kartela, or net profit.",
-    left: isRTL ? "الشهر الأول" : "Left month",
-    right: isRTL ? "الشهر الثاني" : "Right month",
+    title: isRTL ? "مقارنة الأشهر" : "Month comparison",
+    subtitle: isThreeMonths
+      ? isRTL
+        ? "قارن ثلاثة أشهر جنباً إلى جنب؛ الفرق والنمو بين كل شهرين متتاليين."
+        : "Compare three months side by side. Change and growth appear between each pair of consecutive months."
+      : isRTL
+        ? "قارن شهرين؛ الفرق والنمو من الشهر الثاني مقابل الأول."
+        : "Compare two months. Change and growth compare the second month to the first.",
+    periodCount: isRTL ? "عدد الأشهر" : "Months to compare",
+    twoMonths: isRTL ? "شهران" : "2 months",
+    threeMonths: isRTL ? "ثلاثة أشهر" : "3 months",
+    month1: isRTL ? "الشهر ١" : "Month 1",
+    month2: isRTL ? "الشهر ٢" : "Month 2",
+    month3: isRTL ? "الشهر ٣" : "Month 3",
     mode: isRTL ? "نوع المقارنة" : "Comparison type",
     run: isRTL ? "تنفيذ المقارنة" : "Run comparison",
     loading: isRTL ? "جارٍ تحميل المقارنة…" : "Loading comparison…",
@@ -512,6 +648,9 @@ export default function ComparisonPage() {
     detailNone: isRTL ? "لا توجد طلبات لهذا الصف في هذه الفترة." : "No order lines for this item in this period.",
     detailLoadErr: isRTL ? "تعذر تحميل التفاصيل" : "Could not load details",
     colInvoice: isRTL ? "مرجع الفاتورة" : "Invoice",
+    colKartela: isRTL ? "كارتيلا" : "Kartela",
+    colBranch: isRTL ? "الفرع" : "Branch",
+    colDayDate: isRTL ? "التاريخ (يوم)" : "Date (day)",
     colMeters: isRTL ? "الأمتار" : "Meters",
     colClient: isRTL ? "العميل" : "Client",
     colProduct: isRTL ? "المنتج" : "Product",
@@ -569,10 +708,11 @@ export default function ComparisonPage() {
     detailRequestId.current += 1;
     setExpandedKey(null);
     setDetailLeft([]);
+    setDetailMid([]);
     setDetailRight([]);
     setDetailError(null);
     setDetailLoading(false);
-  }, [mode, left.month, left.year, right.month, right.year, typeKind, typeValue]);
+  }, [mode, monthCount, period1.month, period1.year, period2.month, period2.year, period3.month, period3.year, typeKind, typeValue]);
 
   const toggleDetailRow = useCallback(
     async (row: CompareRow) => {
@@ -580,6 +720,7 @@ export default function ComparisonPage() {
         detailRequestId.current += 1;
         setExpandedKey(null);
         setDetailLeft([]);
+        setDetailMid([]);
         setDetailRight([]);
         setDetailError(null);
         setDetailLoading(false);
@@ -590,16 +731,30 @@ export default function ComparisonPage() {
       setDetailLoading(true);
       setDetailError(null);
       setDetailLeft([]);
+      setDetailMid([]);
       setDetailRight([]);
       try {
         const supabase = createClient();
-        const [dL, dR] = await Promise.all([
-          fetchOrderLinesForLine(supabase, left, mode, row.key, typeKind, typeValue, spFilter, isRTL),
-          fetchOrderLinesForLine(supabase, right, mode, row.key, typeKind, typeValue, spFilter, isRTL),
-        ]);
-        if (detailRequestId.current !== myId) return;
-        setDetailLeft(dL);
-        setDetailRight(dR);
+        if (monthCount === "three") {
+          const [dL, dM, dR] = await Promise.all([
+            fetchOrderLinesForLine(supabase, period1, mode, row.key, typeKind, typeValue, spFilter, isRTL),
+            fetchOrderLinesForLine(supabase, period2, mode, row.key, typeKind, typeValue, spFilter, isRTL),
+            fetchOrderLinesForLine(supabase, period3, mode, row.key, typeKind, typeValue, spFilter, isRTL),
+          ]);
+          if (detailRequestId.current !== myId) return;
+          setDetailLeft(dL);
+          setDetailMid(dM);
+          setDetailRight(dR);
+        } else {
+          const [dL, dR] = await Promise.all([
+            fetchOrderLinesForLine(supabase, period1, mode, row.key, typeKind, typeValue, spFilter, isRTL),
+            fetchOrderLinesForLine(supabase, period2, mode, row.key, typeKind, typeValue, spFilter, isRTL),
+          ]);
+          if (detailRequestId.current !== myId) return;
+          setDetailLeft(dL);
+          setDetailMid([]);
+          setDetailRight(dR);
+        }
       } catch (e) {
         if (detailRequestId.current === myId) {
           setDetailError(e instanceof Error ? e.message : "Failed");
@@ -610,7 +765,7 @@ export default function ComparisonPage() {
         }
       }
     },
-    [expandedKey, left, right, mode, typeKind, typeValue, spFilter, isRTL]
+    [expandedKey, monthCount, period1, period2, period3, mode, typeKind, typeValue, spFilter, isRTL]
   );
 
   const loadPeriodMap = useCallback(
@@ -713,12 +868,18 @@ export default function ComparisonPage() {
 
   const runComparison = useCallback(async () => {
     if (!currentUser) return;
-    const cacheKey = `comparison_v1:${mode}:${left.year}-${left.month}:${right.year}-${right.month}:${currentUser.role}:${salespersonId ?? "all"}:${locale}:t:${typeKind}:${typeValue.trim()}`;
-    const cached = dataCache.get<{ rows: CompareRow[]; leftTotal: number; rightTotal: number }>(cacheKey);
+    const cacheKey = `comparison_v5_${monthCount}:${mode}:${period1.year}-${period1.month}:${period2.year}-${period2.month}:${period3.year}-${period3.month}:${currentUser.role}:${salespersonId ?? "all"}:${locale}:t:${typeKind}:${typeValue.trim()}`;
+    const cached = dataCache.get<{
+      rows: CompareRow[];
+      total1: number;
+      total2: number;
+      total3: number;
+    }>(cacheKey);
     if (cached) {
       setRows(cached.rows);
-      setLeftTotal(cached.leftTotal);
-      setRightTotal(cached.rightTotal);
+      setTotal1(cached.total1);
+      setTotal2(cached.total2);
+      setTotal3(cached.total3);
       setError(null);
       setLoading(false);
       return;
@@ -726,34 +887,82 @@ export default function ComparisonPage() {
     setLoading(true);
     setError(null);
     try {
-      const [leftMap, rightMap] = await Promise.all([
-        loadPeriodMap(left, mode, typeKind, typeValue),
-        loadPeriodMap(right, mode, typeKind, typeValue),
-      ]);
-      const keys = new Set<string>([...Array.from(leftMap.keys()), ...Array.from(rightMap.keys())]);
-      const merged: CompareRow[] = [];
-      keys.forEach((key) => {
-        const l = leftMap.get(key) ?? 0;
-        const r = rightMap.get(key) ?? 0;
-        const d = r - l;
-        merged.push({ key, left: l, right: r, diff: d, growth: growthPct(r, l) });
-      });
-      merged.sort((a, b) => Math.max(b.left, b.right) - Math.max(a.left, a.right));
-      setRows(merged);
-      const leftAgg = merged.reduce((sum, item) => sum + item.left, 0);
-      const rightAgg = merged.reduce((sum, item) => sum + item.right, 0);
-      setLeftTotal(leftAgg);
-      setRightTotal(rightAgg);
-      dataCache.set(cacheKey, { rows: merged, leftTotal: leftAgg, rightTotal: rightAgg });
+      if (monthCount === "two") {
+        const [map1, map2] = await Promise.all([
+          loadPeriodMap(period1, mode, typeKind, typeValue),
+          loadPeriodMap(period2, mode, typeKind, typeValue),
+        ]);
+        const keys = new Set<string>([...Array.from(map1.keys()), ...Array.from(map2.keys())]);
+        const merged: CompareRow[] = [];
+        keys.forEach((key) => {
+          const l = map1.get(key) ?? 0;
+          const r = map2.get(key) ?? 0;
+          merged.push({
+            key,
+            left: l,
+            mid: 0,
+            right: r,
+            diff12: r - l,
+            growth12: growthPct(r, l),
+            diff23: 0,
+            growth23: 0,
+          });
+        });
+        merged.sort((a, b) => Math.max(b.left, b.right) - Math.max(a.left, a.right));
+        setRows(merged);
+        const t1 = merged.reduce((sum, item) => sum + item.left, 0);
+        const t2 = merged.reduce((sum, item) => sum + item.right, 0);
+        setTotal1(t1);
+        setTotal2(t2);
+        setTotal3(0);
+        dataCache.set(cacheKey, { rows: merged, total1: t1, total2: t2, total3: 0 });
+      } else {
+        const [map1, map2, map3] = await Promise.all([
+          loadPeriodMap(period1, mode, typeKind, typeValue),
+          loadPeriodMap(period2, mode, typeKind, typeValue),
+          loadPeriodMap(period3, mode, typeKind, typeValue),
+        ]);
+        const keys = new Set<string>([
+          ...Array.from(map1.keys()),
+          ...Array.from(map2.keys()),
+          ...Array.from(map3.keys()),
+        ]);
+        const merged: CompareRow[] = [];
+        keys.forEach((key) => {
+          const l = map1.get(key) ?? 0;
+          const m = map2.get(key) ?? 0;
+          const r = map3.get(key) ?? 0;
+          merged.push({
+            key,
+            left: l,
+            mid: m,
+            right: r,
+            diff12: m - l,
+            growth12: growthPct(m, l),
+            diff23: r - m,
+            growth23: growthPct(r, m),
+          });
+        });
+        merged.sort((a, b) => Math.max(b.left, b.mid, b.right) - Math.max(a.left, a.mid, a.right));
+        setRows(merged);
+        const t1 = merged.reduce((sum, item) => sum + item.left, 0);
+        const t2 = merged.reduce((sum, item) => sum + item.mid, 0);
+        const t3 = merged.reduce((sum, item) => sum + item.right, 0);
+        setTotal1(t1);
+        setTotal2(t2);
+        setTotal3(t3);
+        dataCache.set(cacheKey, { rows: merged, total1: t1, total2: t2, total3: t3 });
+      }
     } catch (e: unknown) {
       setRows([]);
-      setLeftTotal(0);
-      setRightTotal(0);
+      setTotal1(0);
+      setTotal2(0);
+      setTotal3(0);
       setError(e instanceof Error ? e.message : "Failed");
     } finally {
       setLoading(false);
     }
-  }, [currentUser, left, right, mode, typeKind, typeValue, loadPeriodMap]);
+  }, [currentUser, monthCount, period1, period2, period3, mode, typeKind, typeValue, loadPeriodMap]);
 
   useEffect(() => {
     if (!currentUser) return;
@@ -781,53 +990,150 @@ export default function ComparisonPage() {
 
       <Card>
         <CardContent className="pt-6 space-y-4">
-          <div className="grid gap-3 md:grid-cols-3">
-            <div className="space-y-2">
-              <label className="text-sm font-medium">{t.mode}</label>
-              <Select value={mode} onValueChange={(v) => setMode(v as CompareMode)}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  {modeOptions.map((m) => (
-                    <SelectItem key={m} value={m}>{modeLabel(m)}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-
-            <div className="space-y-2">
-              <label className="text-sm font-medium">{t.left}</label>
-              <div className="grid grid-cols-2 gap-2">
-                <Select value={left.month.toString()} onValueChange={(v) => setLeft((p) => ({ ...p, month: Number(v) }))}>
-                  <SelectTrigger><SelectValue /></SelectTrigger>
+          <div className="space-y-4">
+            <div className="grid gap-4 md:grid-cols-2">
+              <div className="space-y-2">
+                <label className="text-sm font-medium">{t.mode}</label>
+                <Select value={mode} onValueChange={(v) => setMode(v as CompareMode)}>
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
                   <SelectContent>
-                    {months.map((m, idx) => <SelectItem key={idx + 1} value={(idx + 1).toString()}>{m}</SelectItem>)}
+                    {modeOptions.map((m) => (
+                      <SelectItem key={m} value={m}>
+                        {modeLabel(m)}
+                      </SelectItem>
+                    ))}
                   </SelectContent>
                 </Select>
-                <Select value={left.year.toString()} onValueChange={(v) => setLeft((p) => ({ ...p, year: Number(v) }))}>
-                  <SelectTrigger><SelectValue /></SelectTrigger>
+              </div>
+              <div className="space-y-2">
+                <label className="text-sm font-medium">{t.periodCount}</label>
+                <Select
+                  value={monthCount}
+                  onValueChange={(v) => setMonthCount(v as MonthCountMode)}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
                   <SelectContent>
-                    {years.map((y) => <SelectItem key={y} value={y.toString()}>{y}</SelectItem>)}
+                    <SelectItem value="two">{t.twoMonths}</SelectItem>
+                    <SelectItem value="three">{t.threeMonths}</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
             </div>
 
-            <div className="space-y-2">
-              <label className="text-sm font-medium">{t.right}</label>
-              <div className="grid grid-cols-2 gap-2">
-                <Select value={right.month.toString()} onValueChange={(v) => setRight((p) => ({ ...p, month: Number(v) }))}>
-                  <SelectTrigger><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    {months.map((m, idx) => <SelectItem key={idx + 1} value={(idx + 1).toString()}>{m}</SelectItem>)}
-                  </SelectContent>
-                </Select>
-                <Select value={right.year.toString()} onValueChange={(v) => setRight((p) => ({ ...p, year: Number(v) }))}>
-                  <SelectTrigger><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    {years.map((y) => <SelectItem key={y} value={y.toString()}>{y}</SelectItem>)}
-                  </SelectContent>
-                </Select>
+            <div className={`grid gap-4 ${isThreeMonths ? "sm:grid-cols-3" : "sm:grid-cols-2"}`}>
+              <div className="space-y-2 rounded-xl border border-border/80 bg-muted/20 p-3">
+                <label className="text-sm font-medium">{t.month1}</label>
+                <div className="grid grid-cols-2 gap-2">
+                  <Select
+                    value={period1.month.toString()}
+                    onValueChange={(v) => setPeriod1((p) => ({ ...p, month: Number(v) }))}
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {months.map((m, idx) => (
+                        <SelectItem key={idx + 1} value={(idx + 1).toString()}>
+                          {m}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <Select
+                    value={period1.year.toString()}
+                    onValueChange={(v) => setPeriod1((p) => ({ ...p, year: Number(v) }))}
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {years.map((y) => (
+                        <SelectItem key={y} value={y.toString()}>
+                          {y}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
               </div>
+
+              <div className="space-y-2 rounded-xl border border-border/80 bg-muted/20 p-3">
+                <label className="text-sm font-medium">{t.month2}</label>
+                <div className="grid grid-cols-2 gap-2">
+                  <Select
+                    value={period2.month.toString()}
+                    onValueChange={(v) => setPeriod2((p) => ({ ...p, month: Number(v) }))}
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {months.map((m, idx) => (
+                        <SelectItem key={idx + 1} value={(idx + 1).toString()}>
+                          {m}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <Select
+                    value={period2.year.toString()}
+                    onValueChange={(v) => setPeriod2((p) => ({ ...p, year: Number(v) }))}
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {years.map((y) => (
+                        <SelectItem key={y} value={y.toString()}>
+                          {y}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+
+              {isThreeMonths ? (
+                <div className="space-y-2 rounded-xl border border-border/80 bg-muted/20 p-3">
+                  <label className="text-sm font-medium">{t.month3}</label>
+                  <div className="grid grid-cols-2 gap-2">
+                    <Select
+                      value={period3.month.toString()}
+                      onValueChange={(v) => setPeriod3((p) => ({ ...p, month: Number(v) }))}
+                    >
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {months.map((m, idx) => (
+                          <SelectItem key={idx + 1} value={(idx + 1).toString()}>
+                            {m}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <Select
+                      value={period3.year.toString()}
+                      onValueChange={(v) => setPeriod3((p) => ({ ...p, year: Number(v) }))}
+                    >
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {years.map((y) => (
+                          <SelectItem key={y} value={y.toString()}>
+                            {y}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+              ) : null}
             </div>
           </div>
 
@@ -901,15 +1207,39 @@ export default function ComparisonPage() {
         <p className="text-sm text-destructive bg-destructive/10 border border-destructive/20 rounded-lg px-3 py-2">{error}</p>
       )}
 
-      <div className="grid gap-4 md:grid-cols-2">
-        <Card>
-          <CardHeader className="pb-2"><CardTitle className="text-base">{t.left} · {months[left.month - 1]} {left.year}</CardTitle></CardHeader>
-          <CardContent><p className="text-2xl font-bold">{formatNumber(Math.round(leftTotal))}</p></CardContent>
+      <div className={`grid gap-4 ${isThreeMonths ? "sm:grid-cols-3" : "sm:grid-cols-2"}`}>
+        <Card className="border-border/80 shadow-sm">
+          <CardHeader className="pb-2">
+            <CardTitle className="text-base font-semibold">
+              {t.month1} · {months[period1.month - 1]} {period1.year}
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p className="text-2xl font-bold tabular-nums">{formatNumber(Math.round(total1))}</p>
+          </CardContent>
         </Card>
-        <Card>
-          <CardHeader className="pb-2"><CardTitle className="text-base">{t.right} · {months[right.month - 1]} {right.year}</CardTitle></CardHeader>
-          <CardContent><p className="text-2xl font-bold">{formatNumber(Math.round(rightTotal))}</p></CardContent>
+        <Card className="border-border/80 shadow-sm">
+          <CardHeader className="pb-2">
+            <CardTitle className="text-base font-semibold">
+              {t.month2} · {months[period2.month - 1]} {period2.year}
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p className="text-2xl font-bold tabular-nums">{formatNumber(Math.round(total2))}</p>
+          </CardContent>
         </Card>
+        {isThreeMonths ? (
+          <Card className="border-border/80 shadow-sm">
+            <CardHeader className="pb-2">
+              <CardTitle className="text-base font-semibold">
+                {t.month3} · {months[period3.month - 1]} {period3.year}
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <p className="text-2xl font-bold tabular-nums">{formatNumber(Math.round(total3))}</p>
+            </CardContent>
+          </Card>
+        ) : null}
       </div>
 
       {loading ? (
@@ -925,26 +1255,45 @@ export default function ComparisonPage() {
         <Card className="overflow-hidden">
           <CardContent className="p-0">
             <p className="text-xs text-muted-foreground px-3 py-2 border-b border-border bg-muted/20">{t.clickRowHint}</p>
-            <div className="overflow-x-auto" dir={isRTL ? "rtl" : "ltr"}>
-              <table className="w-full min-w-[900px] text-sm border-collapse border border-border">
+            <div className="max-h-[min(70vh,720px)] overflow-auto overscroll-contain" dir={isRTL ? "rtl" : "ltr"}>
+              <table
+                className={`w-full text-sm border-separate border-spacing-0 border border-border ${isThreeMonths ? "min-w-[1400px]" : "min-w-[800px]"}`}
+              >
                 <thead>
-                  <tr className="bg-muted/70">
-                    <th className="border border-border p-3 text-start font-semibold w-8" aria-hidden />
-                    <th className="border border-border p-3 text-start font-semibold">{t.entity}</th>
-                    <th className="border border-border p-3 text-end font-semibold">{months[left.month - 1]} {left.year}</th>
-                    <th className="border border-border p-3 text-end font-semibold">{months[right.month - 1]} {right.year}</th>
-                    <th className="border border-border p-3 text-end font-semibold">{t.change}</th>
-                    <th className="border border-border p-3 text-end font-semibold">{t.growth}</th>
+                  <tr>
+                    <th className="sticky top-0 z-20 bg-muted/95 backdrop-blur-sm supports-[backdrop-filter]:bg-muted/80 border border-border p-3 text-start font-semibold w-8 shadow-[0_1px_0_0_hsl(var(--border))]" aria-hidden />
+                    <th className="sticky top-0 z-20 bg-muted/95 backdrop-blur-sm supports-[backdrop-filter]:bg-muted/80 border border-border p-3 text-start font-semibold shadow-[0_1px_0_0_hsl(var(--border))]">{t.entity}</th>
+                    <th className="sticky top-0 z-20 bg-muted/95 backdrop-blur-sm supports-[backdrop-filter]:bg-muted/80 border border-border p-3 text-end font-semibold shadow-[0_1px_0_0_hsl(var(--border))]">{months[period1.month - 1]} {period1.year}</th>
+                    {isThreeMonths ? (
+                      <>
+                        <th className="sticky top-0 z-20 bg-muted/95 backdrop-blur-sm supports-[backdrop-filter]:bg-muted/80 border border-border p-3 text-end font-semibold shadow-[0_1px_0_0_hsl(var(--border))]">{t.change}</th>
+                        <th className="sticky top-0 z-20 bg-muted/95 backdrop-blur-sm supports-[backdrop-filter]:bg-muted/80 border border-border p-3 text-end font-semibold shadow-[0_1px_0_0_hsl(var(--border))]">{t.growth}</th>
+                        <th className="sticky top-0 z-20 bg-muted/95 backdrop-blur-sm supports-[backdrop-filter]:bg-muted/80 border border-border p-3 text-end font-semibold shadow-[0_1px_0_0_hsl(var(--border))]">{months[period2.month - 1]} {period2.year}</th>
+                        <th className="sticky top-0 z-20 bg-muted/95 backdrop-blur-sm supports-[backdrop-filter]:bg-muted/80 border border-border p-3 text-end font-semibold shadow-[0_1px_0_0_hsl(var(--border))]">{t.change}</th>
+                        <th className="sticky top-0 z-20 bg-muted/95 backdrop-blur-sm supports-[backdrop-filter]:bg-muted/80 border border-border p-3 text-end font-semibold shadow-[0_1px_0_0_hsl(var(--border))]">{t.growth}</th>
+                        <th className="sticky top-0 z-20 bg-muted/95 backdrop-blur-sm supports-[backdrop-filter]:bg-muted/80 border border-border p-3 text-end font-semibold shadow-[0_1px_0_0_hsl(var(--border))]">{months[period3.month - 1]} {period3.year}</th>
+                      </>
+                    ) : (
+                      <>
+                        <th className="sticky top-0 z-20 bg-muted/95 backdrop-blur-sm supports-[backdrop-filter]:bg-muted/80 border border-border p-3 text-end font-semibold shadow-[0_1px_0_0_hsl(var(--border))]">{months[period2.month - 1]} {period2.year}</th>
+                        <th className="sticky top-0 z-20 bg-muted/95 backdrop-blur-sm supports-[backdrop-filter]:bg-muted/80 border border-border p-3 text-end font-semibold shadow-[0_1px_0_0_hsl(var(--border))]">{t.change}</th>
+                        <th className="sticky top-0 z-20 bg-muted/95 backdrop-blur-sm supports-[backdrop-filter]:bg-muted/80 border border-border p-3 text-end font-semibold shadow-[0_1px_0_0_hsl(var(--border))]">{t.growth}</th>
+                      </>
+                    )}
                   </tr>
                 </thead>
                 <tbody>
                   {rows.map((row) => {
-                    const positive = row.diff >= 0;
+                    const positive12 = row.diff12 >= 0;
+                    const positive23 = row.diff23 >= 0;
                     const open = expandedKey === row.key;
                     const detailLabels: DetailTableLabels = {
                       detailOrders: t.detailOrders,
                       detailNone: t.detailNone,
                       colInvoice: t.colInvoice,
+                      colKartela: t.colKartela,
+                      colBranch: t.colBranch,
+                      colDayDate: t.colDayDate,
                       colMeters: t.colMeters,
                       colClient: t.colClient,
                       colProduct: t.colProduct,
@@ -972,21 +1321,50 @@ export default function ComparisonPage() {
                           </td>
                           <td className="border border-border p-3 font-medium">{row.key}</td>
                           <td className="border border-border p-3 text-end tabular-nums">{Math.round(row.left).toLocaleString()}</td>
-                          <td className="border border-border p-3 text-end tabular-nums">{Math.round(row.right).toLocaleString()}</td>
-                          <td className={`border border-border p-3 text-end tabular-nums font-semibold ${positive ? "text-green-600" : "text-red-600"}`}>
-                            {positive ? "+" : ""}
-                            {Math.round(row.diff).toLocaleString()}
-                          </td>
-                          <td className={`border border-border p-3 text-end tabular-nums font-semibold ${positive ? "text-green-600" : "text-red-600"}`}>
-                            <span className="inline-flex items-center gap-1">
-                              {positive ? <ArrowUp className="h-3.5 w-3.5" /> : <ArrowDown className="h-3.5 w-3.5" />}
-                              {row.growth.toFixed(1)}%
-                            </span>
-                          </td>
+                          {isThreeMonths ? (
+                            <>
+                              <td className={`border border-border p-3 text-end tabular-nums font-semibold ${positive12 ? "text-green-600" : "text-red-600"}`}>
+                                {positive12 ? "+" : ""}
+                                {Math.round(row.diff12).toLocaleString()}
+                              </td>
+                              <td className={`border border-border p-3 text-end tabular-nums font-semibold ${positive12 ? "text-green-600" : "text-red-600"}`}>
+                                <span className="inline-flex items-center gap-1">
+                                  {positive12 ? <ArrowUp className="h-3.5 w-3.5" /> : <ArrowDown className="h-3.5 w-3.5" />}
+                                  {row.growth12.toFixed(1)}%
+                                </span>
+                              </td>
+                              <td className="border border-border p-3 text-end tabular-nums">{Math.round(row.mid).toLocaleString()}</td>
+                              <td className={`border border-border p-3 text-end tabular-nums font-semibold ${positive23 ? "text-green-600" : "text-red-600"}`}>
+                                {positive23 ? "+" : ""}
+                                {Math.round(row.diff23).toLocaleString()}
+                              </td>
+                              <td className={`border border-border p-3 text-end tabular-nums font-semibold ${positive23 ? "text-green-600" : "text-red-600"}`}>
+                                <span className="inline-flex items-center gap-1">
+                                  {positive23 ? <ArrowUp className="h-3.5 w-3.5" /> : <ArrowDown className="h-3.5 w-3.5" />}
+                                  {row.growth23.toFixed(1)}%
+                                </span>
+                              </td>
+                              <td className="border border-border p-3 text-end tabular-nums">{Math.round(row.right).toLocaleString()}</td>
+                            </>
+                          ) : (
+                            <>
+                              <td className="border border-border p-3 text-end tabular-nums">{Math.round(row.right).toLocaleString()}</td>
+                              <td className={`border border-border p-3 text-end tabular-nums font-semibold ${positive12 ? "text-green-600" : "text-red-600"}`}>
+                                {positive12 ? "+" : ""}
+                                {Math.round(row.diff12).toLocaleString()}
+                              </td>
+                              <td className={`border border-border p-3 text-end tabular-nums font-semibold ${positive12 ? "text-green-600" : "text-red-600"}`}>
+                                <span className="inline-flex items-center gap-1">
+                                  {positive12 ? <ArrowUp className="h-3.5 w-3.5" /> : <ArrowDown className="h-3.5 w-3.5" />}
+                                  {row.growth12.toFixed(1)}%
+                                </span>
+                              </td>
+                            </>
+                          )}
                         </tr>
                         {open && (
                           <tr className="bg-muted/15">
-                            <td colSpan={6} className="border border-border p-3 align-top">
+                            <td colSpan={isThreeMonths ? 9 : 6} className="border border-border p-3 align-top">
                               {detailLoading ? (
                                 <div className="flex items-center gap-2 text-sm text-muted-foreground py-6 justify-center">
                                   <Loader2 className="h-4 w-4 animate-spin" />
@@ -997,21 +1375,42 @@ export default function ComparisonPage() {
                                   {t.detailLoadErr}: {detailError}
                                 </p>
                               ) : (
-                                <div className="grid gap-4 md:grid-cols-2">
-                                  <ComparisonOrderDetailTable
-                                    key={`dl-${row.key}`}
-                                    list={detailLeft}
-                                    periodLabel={`${months[left.month - 1]} ${left.year}`}
-                                    labels={detailLabels}
-                                    isRTL={isRTL}
-                                  />
-                                  <ComparisonOrderDetailTable
-                                    key={`dr-${row.key}`}
-                                    list={detailRight}
-                                    periodLabel={`${months[right.month - 1]} ${right.year}`}
-                                    labels={detailLabels}
-                                    isRTL={isRTL}
-                                  />
+                                <div className="scrollbar-thin w-full max-w-full overflow-x-auto overflow-y-visible rounded-lg border border-border/50 bg-muted/10 p-2">
+                                  <div className="flex min-w-[min(100%,840px)] flex-row flex-nowrap items-stretch gap-3">
+                                    <div className="min-w-[260px] flex-1 basis-0">
+                                      <ComparisonOrderDetailTable
+                                        key={`d1-${row.key}`}
+                                        list={detailLeft}
+                                        periodLabel={`${months[period1.month - 1]} ${period1.year}`}
+                                        labels={detailLabels}
+                                        isRTL={isRTL}
+                                      />
+                                    </div>
+                                    {isThreeMonths ? (
+                                      <div className="min-w-[260px] flex-1 basis-0">
+                                        <ComparisonOrderDetailTable
+                                          key={`d2-${row.key}`}
+                                          list={detailMid}
+                                          periodLabel={`${months[period2.month - 1]} ${period2.year}`}
+                                          labels={detailLabels}
+                                          isRTL={isRTL}
+                                        />
+                                      </div>
+                                    ) : null}
+                                    <div className="min-w-[260px] flex-1 basis-0">
+                                      <ComparisonOrderDetailTable
+                                        key={`d3-${row.key}`}
+                                        list={detailRight}
+                                        periodLabel={
+                                          isThreeMonths
+                                            ? `${months[period3.month - 1]} ${period3.year}`
+                                            : `${months[period2.month - 1]} ${period2.year}`
+                                        }
+                                        labels={detailLabels}
+                                        isRTL={isRTL}
+                                      />
+                                    </div>
+                                  </div>
                                 </div>
                               )}
                             </td>

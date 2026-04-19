@@ -1399,7 +1399,7 @@ export default function DashboardPage() {
         </button>
 
         {/* Clients */}
-        <button type="button" onClick={() => { dataCache.invalidate("clients_v10:"); setFilter("selectedMonth", dashTo.month); setFilter("selectedYear", dashTo.year); setFilter("selectedLevel", null); router.push("/clients"); }}
+        <button type="button" onClick={() => { dataCache.invalidate("clients_v16:"); setFilter("selectedMonth", dashTo.month); setFilter("selectedYear", dashTo.year); setFilter("selectedLevel", null); router.push("/clients"); }}
           className="rounded-xl md:rounded-2xl border border-green-200 dark:border-green-800 bg-gradient-to-br from-green-50 to-green-100/50 dark:from-green-950/30 dark:to-green-900/10 p-2.5 md:p-4 text-start hover:shadow-md transition-all group min-w-0">
           <div className="flex items-start justify-between gap-1 mb-1 md:mb-2">
             <span className="text-[10px] md:text-xs font-semibold text-green-600 dark:text-green-400 leading-tight line-clamp-2">{isRTL ? "عملاء نشطون" : "Active Clients"}</span>
@@ -1450,7 +1450,7 @@ export default function DashboardPage() {
         // range is January → March).
         const goClients = (level: string) => {
           // Clear cached clients data for the target month so the page always loads fresh
-          dataCache.invalidate(`clients_v10:`);
+          dataCache.invalidate(`clients_v16:`);
           setFilter("selectedLevel",  level);
           setFilter("selectedMonth",  dashTo.month);
           setFilter("selectedYear",   dashTo.year);

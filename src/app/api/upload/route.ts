@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
+import { invalidateServerCache } from "@/lib/serverResponseCache";
 
 /** Fetch ALL rows from a table with pagination (avoids URL-length and encoding issues) */
 async function fetchAll<T>(db: any, table: string, selectColumns: string): Promise<T[]> {
@@ -269,6 +270,9 @@ export async function POST(req: NextRequest) {
     } catch (e) {
       console.warn("Could not insert activity log:", e);
     }
+
+    invalidateServerCache("urgent-");
+    invalidateServerCache("order-distinct");
 
     return NextResponse.json({
       success: true,

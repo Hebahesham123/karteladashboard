@@ -12,25 +12,22 @@ SET session_replication_role = replica;
 TRUNCATE TABLE public.activity_logs        RESTART IDENTITY CASCADE;
 TRUNCATE TABLE public.client_status_history RESTART IDENTITY CASCADE;
 
--- ── 2. Clear orders (depends on clients, products, salespersons) ──
-TRUNCATE TABLE public.orders              RESTART IDENTITY CASCADE;
+-- ── 2. Clear orders + upload_batches together (orders FK → upload_batches; batches cannot be truncated first) ──
+TRUNCATE TABLE public.orders, public.upload_batches RESTART IDENTITY CASCADE;
 
--- ── 3. Clear upload batches ───────────────────────────────────
-TRUNCATE TABLE public.upload_batches      RESTART IDENTITY CASCADE;
-
--- ── 4. Clear clients ──────────────────────────────────────────
+-- ── 3. Clear clients ──────────────────────────────────────────
 TRUNCATE TABLE public.clients             RESTART IDENTITY CASCADE;
 
--- ── 5. Clear products ─────────────────────────────────────────
+-- ── 4. Clear products ─────────────────────────────────────────
 TRUNCATE TABLE public.products            RESTART IDENTITY CASCADE;
 
--- ── 6. Clear salespersons ─────────────────────────────────────
+-- ── 5. Clear salespersons ───────────────────────────────────
 TRUNCATE TABLE public.salespersons        RESTART IDENTITY CASCADE;
 
 -- Re-enable triggers
 SET session_replication_role = DEFAULT;
 
--- ── 7. Verify everything is empty ────────────────────────────
+-- ── 6. Verify everything is empty ───────────────────────────
 SELECT 'orders'           AS table_name, COUNT(*) AS remaining FROM public.orders
 UNION ALL
 SELECT 'clients',                         COUNT(*) FROM public.clients

@@ -151,7 +151,53 @@ export async function fetchClientIdsForSalesperson(
   return { ids, error: lastError };
 }
 
-export type ClientOrderImportFields = { product: string; category: string; pricelist: string; invoice: string };
+export type ClientOrderImportFields = {
+  product: string;
+  category: string;
+  pricelist: string;
+  invoice: string;
+  /** From order line `branch` (e.g. Odoo Invoice lines/Branch). */
+  branch: string;
+  /** Calendar day from invoice_date or created_at. */
+  dayDate: string;
+};
+
+function formatOrderLineDayDate(invoiceDate: unknown, createdAt: unknown): string {
+  const raw =
+    invoiceDate != null && String(invoiceDate).trim() !== ""
+      ? invoiceDate
+      : createdAt != null && String(createdAt).trim() !== ""
+        ? createdAt
+        : null;
+  if (raw == null) return "";
+  const t = Date.parse(String(raw));
+  if (Number.isNaN(t)) return "";
+  return new Date(t).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+}
+
+/** Prefer lines with branch / date so the "latest" row isn't always chosen when it's sparse. */
+function pickBestOrderLineForClientImport(
+  rows: {
+    client_id: string;
+    category?: string | null;
+    pricelist?: string | null;
+    invoice_ref?: string | null;
+    branch?: string | null;
+    invoice_date?: string | null;
+    created_at?: string | null;
+    products?: unknown;
+  }[]
+): (typeof rows)[0] | null {
+  if (rows.length === 0) return null;
+  if (rows.length === 1) return rows[0];
+  const score = (row: (typeof rows)[0]) => {
+    const br = String(row.branch ?? "").trim();
+    const dd = formatOrderLineDayDate(row.invoice_date, row.created_at);
+    const ts = Date.parse(String(row.created_at ?? "")) || 0;
+    return (br ? 1_000_000 : 0) + (dd ? 10_000 : 0) + ts / 1e15;
+  };
+  return [...rows].sort((a, b) => score(b) - score(a))[0] ?? rows[0];
+}
 
 /** Per client: distinct category / pricelist / invoice_ref from meter lines in the given month (not كارتيلا). */
 export async function fetchClientMeterOrderImportFields(
@@ -215,6 +261,8 @@ export async function fetchClientMeterOrderImportFields(
       category: joinSets(v.cats),
       pricelist: joinSets(v.pls),
       invoice: joinSets(v.invs),
+      branch: "",
+      dayDate: "",
     });
   });
 
@@ -261,12 +309,21 @@ export async function fetchClientLatestOrderImportFallbackFields(
       const cid = row.client_id;
       if (!cid) continue;
 
-      const current = byClient.get(cid) ?? { product: "", category: "", pricelist: "", invoice: "" };
+      const current = byClient.get(cid) ?? {
+        product: "",
+        category: "",
+        pricelist: "",
+        invoice: "",
+        branch: "",
+        dayDate: "",
+      };
       const next: ClientOrderImportFields = {
         product: current.product || pick(productNameFromJoin(row)),
         category: current.category || pick(row.category),
         pricelist: current.pricelist || pick(row.pricelist),
         invoice: current.invoice || pick(row.invoice_ref),
+        branch: current.branch,
+        dayDate: current.dayDate,
       };
       byClient.set(cid, next);
     }
@@ -291,43 +348,74 @@ export async function fetchClientLatestOrderLineFields(
 
   const clean = (v: unknown) => String(v ?? "").trim();
 
+  /** PostgREST / Supabase default max rows is often 1000; paginate or many clients never appear. */
+  const PAGE_SIZE = 1000;
+  const ORDER_SELECT =
+    "client_id, category, pricelist, invoice_ref, branch, invoice_date, created_at, month, year, products!left(name)";
+
   for (let i = 0; i < clientIds.length; i += chunkSize) {
     const chunk = clientIds.slice(i, i + chunkSize);
-    let q = supabase
-      .from("orders")
-      .select("client_id, category, pricelist, invoice_ref, month, year, created_at, products(name)")
-      .in("client_id", chunk)
-      .order("year", { ascending: false })
-      .order("month", { ascending: false })
-      .order("created_at", { ascending: false });
+    const allRows: Record<string, unknown>[] = [];
+    let rangeFrom = 0;
+    for (;;) {
+      let q = supabase
+        .from("orders")
+        .select(ORDER_SELECT)
+        .in("client_id", chunk)
+        .order("year", { ascending: false })
+        .order("month", { ascending: false })
+        .order("created_at", { ascending: false })
+        .range(rangeFrom, rangeFrom + PAGE_SIZE - 1);
 
-    if (opts?.month != null && opts?.year != null) {
-      q = q.eq("month", opts.month).eq("year", opts.year);
+      if (opts?.month != null && opts?.year != null) {
+        q = q.eq("month", opts.month).eq("year", opts.year);
+      }
+
+      const { data, error } = await q;
+      if (error) {
+        lastError = error.message;
+        break;
+      }
+      const batch = data ?? [];
+      for (const r of batch) allRows.push(r as Record<string, unknown>);
+      if (batch.length < PAGE_SIZE) break;
+      rangeFrom += PAGE_SIZE;
+      if (rangeFrom > 80_000) break;
+    }
+    if (lastError) break;
+
+    type OrderRow = (typeof allRows)[number];
+    const byCid = new Map<string, OrderRow[]>();
+    for (const r of allRows) {
+      const row = r as { client_id: string };
+      const cid = row.client_id;
+      if (!cid) continue;
+      if (!byCid.has(cid)) byCid.set(cid, []);
+      byCid.get(cid)!.push(r);
     }
 
-    const { data, error } = await q;
-    if (error) {
-      lastError = error.message;
-      break;
-    }
-
-    for (const r of data ?? []) {
-      const row = r as {
+    byCid.forEach((list, cid) => {
+      const best = pickBestOrderLineForClientImport(list as Parameters<typeof pickBestOrderLineForClientImport>[0]);
+      if (!best) return;
+      const row = best as {
         client_id: string;
         category?: string | null;
         pricelist?: string | null;
         invoice_ref?: string | null;
+        branch?: string | null;
+        invoice_date?: string | null;
+        created_at?: string | null;
         products?: unknown;
       };
-      const cid = row.client_id;
-      if (!cid || byClient.has(cid)) continue;
       byClient.set(cid, {
         product: clean(productNameFromJoin(row)),
         category: clean(row.category),
         pricelist: clean(row.pricelist),
         invoice: clean(row.invoice_ref),
+        branch: clean(row.branch),
+        dayDate: formatOrderLineDayDate(row.invoice_date, row.created_at),
       });
-    }
+    });
   }
 
   return { byClient, error: lastError };

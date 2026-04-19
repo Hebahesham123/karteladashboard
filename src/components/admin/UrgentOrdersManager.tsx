@@ -2,7 +2,8 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Check, Loader2, RefreshCw } from "lucide-react";
+import { Check, Loader2, RefreshCw, Save } from "lucide-react";
+import { isKartelaProductName } from "@/lib/kartelaProduct";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -15,6 +16,10 @@ type Row = {
   invoice_ref: string;
   category: string | null;
   pricelist: string | null;
+  branch: string | null;
+  invoice_date: string | null;
+  line_date: string | null;
+  created_at: string | null;
   month: number;
   year: number;
   quantity: number;
@@ -22,6 +27,10 @@ type Row = {
   client_name: string;
   partner_id: string;
   product_name: string;
+  is_kartela_line: boolean;
+  /** Server: explicit kartela line qty or kartela meters from meter_breakdown. */
+  kartela_qty_display?: number | null;
+  meter_breakdown: unknown;
   current_status: string;
   notes: string | null;
   notes_count?: number;
@@ -36,7 +45,19 @@ type NoteEntry = {
 };
 
 type OrderDetailPayload = {
-  order: { invoice_ref: unknown; branch: unknown; month: unknown; year: unknown };
+  order: {
+    invoice_ref: unknown;
+    branch: unknown;
+    month: unknown;
+    year: unknown;
+    invoice_date?: unknown;
+    quantity?: unknown;
+    invoice_total?: unknown;
+    category?: unknown;
+    pricelist?: unknown;
+    meter_breakdown?: unknown;
+    created_at?: unknown;
+  };
   client: { name: string; partner_id: string; current_status: string; notes: string | null } | null;
   product: { name: string } | null;
   salesperson: { code: string; name: string } | null;
@@ -68,6 +89,7 @@ export function UrgentOrdersManager({
   const [month, setMonth] = useState("3");
   const [year, setYear] = useState(String(new Date().getFullYear()));
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [savingNoteId, setSavingNoteId] = useState<string | null>(null);
   const [assignNote, setAssignNote] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
   const [openNotesOrderId, setOpenNotesOrderId] = useState<string | null>(null);
@@ -131,7 +153,7 @@ export function UrgentOrdersManager({
     const needle = q.trim().toLowerCase();
     if (!needle) return rows;
     return rows.filter((r) =>
-      `${r.client_name} ${r.partner_id} ${r.product_name} ${r.invoice_ref} ${r.category ?? ""} ${r.pricelist ?? ""}`
+      `${r.client_name} ${r.partner_id} ${r.product_name} ${r.invoice_ref} ${r.category ?? ""} ${r.pricelist ?? ""} ${r.branch ?? ""} ${r.line_date ?? ""} ${r.invoice_date ?? ""}`
         .toLowerCase()
         .includes(needle)
     );
@@ -164,6 +186,43 @@ export function UrgentOrdersManager({
     }
     setRows((prev) => prev.map((x) => (x.id === row.id ? { ...x, assigned: !x.assigned, assigned_note: assignNote[row.id] ?? x.assigned_note } : x)));
     setBusyId(null);
+  };
+
+  const saveAssignNote = async (row: Row) => {
+    if (!salespersonId) return;
+    setSavingNoteId(row.id);
+    setError(null);
+    const note = (assignNote[row.id] ?? row.assigned_note ?? "").trim();
+    try {
+      const res = await fetch("/api/urgent-orders/admin", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          orderId: row.id,
+          salespersonId,
+          assigned: row.assigned,
+          note,
+          updateNoteOnly: true,
+        }),
+      });
+      const json = await res.json();
+      if (!res.ok) {
+        setError(json.error || "Failed");
+        return;
+      }
+      setRows((prev) =>
+        prev.map((x) => (x.id === row.id ? { ...x, assigned_note: note || null } : x))
+      );
+      setAssignNote((p) => {
+        const next = { ...p };
+        if (note) next[row.id] = note;
+        else delete next[row.id];
+        return next;
+      });
+    } finally {
+      setSavingNoteId(null);
+    }
   };
 
   const loadOrderHistory = useCallback(async (orderId: string) => {
@@ -247,7 +306,10 @@ export function UrgentOrdersManager({
       );
     }
     if (p) {
-      base.push({ label: isRTL ? "المنتج" : "Product", value: p.name });
+      base.push({
+        label: isRTL ? "المنتج" : "Product",
+        value: `${p.name}${isKartelaProductName(p.name) ? (isRTL ? " (سطر كارتيلا)" : " (kartela line)") : ""}`,
+      });
     }
     if (sp) {
       base.push({ label: isRTL ? "المندوب" : "Salesperson", value: `${sp.name} (${sp.code})` });
@@ -312,9 +374,11 @@ export function UrgentOrdersManager({
           </Button>
         </div>
 
-        <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder={isRTL ? "ابحث داخل الطلبات..." : "Search orders..."} />
+        <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder={isRTL ? "ابحث (عميل، فرع، تاريخ، منتج، فاتورة)..." : "Search (client, branch, date, product, invoice)..."} />
         <p className="text-xs text-muted-foreground">
-          {isRTL ? "انقر على الصف لعرض كل التفاصيل (عدا زر التعيين وملاحظات المندوب وحقل الملاحظة)." : "Click a row to see full details (except Assign, sales notes, and the assign note field)."}
+          {isRTL
+            ? "كل سطر يطابق تحليل الكارتيلا: التاريخ، الفرع، سطور الكارتيلا، وتفصيل الألوان عند الضغط على الصف. تُعرض ملاحظات المندوب/العميل في العمود المخصص."
+            : "Each line matches Kartela-style analysis: date, branch, kartela lines, and color/meter detail in the dialog. Sales/client notes appear in the notes column."}
         </p>
         {error && <p className="text-sm text-destructive">{error}</p>}
 
@@ -355,17 +419,20 @@ export function UrgentOrdersManager({
           </DialogContent>
         </Dialog>
 
-        <div className="overflow-x-auto border rounded-lg">
-          <table className="w-full text-sm">
-            <thead className="bg-muted/40">
-              <tr>
-                <th className="p-2 text-start">{isRTL ? "عاجل" : "Urgent"}</th>
-                <th className="p-2 text-start">{isRTL ? "فاتوره" : "Invoice"}</th>
-                <th className="p-2 text-start">{isRTL ? "العميل" : "Client"}</th>
-                <th className="p-2 text-start">{isRTL ? "المنتج" : "Product"}</th>
-                <th className="p-2 text-start">{isRTL ? "الحالة" : "Status"}</th>
-                <th className="p-2 text-start">{isRTL ? "ملاحظات المندوب" : "Sales notes"}</th>
-                <th className="p-2 text-start">{isRTL ? "ملاحظة التعيين" : "Assign note"}</th>
+        <div className="overflow-x-auto border rounded-lg max-h-[min(75vh,900px)] overflow-y-auto">
+          <table className="w-full text-sm border-separate border-spacing-0">
+            <thead>
+              <tr className="bg-muted/40">
+                <th className="sticky top-0 z-10 p-2 text-start bg-muted/95 backdrop-blur-sm border-b border-border shadow-[0_1px_0_0_hsl(var(--border))]">{isRTL ? "عاجل" : "Urgent"}</th>
+                <th className="sticky top-0 z-10 p-2 text-start whitespace-nowrap bg-muted/95 backdrop-blur-sm border-b border-border shadow-[0_1px_0_0_hsl(var(--border))]">{isRTL ? "تاريخ السطر" : "Line date"}</th>
+                <th className="sticky top-0 z-10 p-2 text-start bg-muted/95 backdrop-blur-sm border-b border-border shadow-[0_1px_0_0_hsl(var(--border))]">{isRTL ? "الفرع" : "Branch"}</th>
+                <th className="sticky top-0 z-10 p-2 text-start bg-muted/95 backdrop-blur-sm border-b border-border shadow-[0_1px_0_0_hsl(var(--border))]">{isRTL ? "فاتوره" : "Invoice"}</th>
+                <th className="sticky top-0 z-10 p-2 text-start bg-muted/95 backdrop-blur-sm border-b border-border shadow-[0_1px_0_0_hsl(var(--border))]">{isRTL ? "العميل" : "Client"}</th>
+                <th className="sticky top-0 z-10 p-2 text-start bg-muted/95 backdrop-blur-sm border-b border-border shadow-[0_1px_0_0_hsl(var(--border))]">{isRTL ? "المنتج" : "Product"}</th>
+                <th className="sticky top-0 z-10 p-2 text-start whitespace-nowrap bg-muted/95 backdrop-blur-sm border-b border-border shadow-[0_1px_0_0_hsl(var(--border))]">{isRTL ? "كارتيلا" : "Kartela"}</th>
+                <th className="sticky top-0 z-10 p-2 text-start bg-muted/95 backdrop-blur-sm border-b border-border shadow-[0_1px_0_0_hsl(var(--border))]">{isRTL ? "الحالة" : "Status"}</th>
+                <th className="sticky top-0 z-10 p-2 text-start bg-muted/95 backdrop-blur-sm border-b border-border shadow-[0_1px_0_0_hsl(var(--border))]">{isRTL ? "ملاحظات المندوب" : "Sales notes"}</th>
+                <th className="sticky top-0 z-10 p-2 text-start bg-muted/95 backdrop-blur-sm border-b border-border shadow-[0_1px_0_0_hsl(var(--border))]">{isRTL ? "ملاحظة التعيين" : "Assign note"}</th>
               </tr>
             </thead>
             <tbody>
@@ -381,9 +448,47 @@ export function UrgentOrdersManager({
                       {r.assigned ? (isRTL ? "مُعيّن" : "Assigned") : (isRTL ? "تعيين" : "Assign")}
                     </Button>
                   </td>
+                  <td className="p-2 text-xs whitespace-nowrap">
+                    {r.line_date || r.invoice_date
+                      ? (r.line_date || r.invoice_date || "").slice(0, 10)
+                      : r.created_at
+                        ? new Date(r.created_at).toLocaleDateString(isRTL ? "ar-EG" : "en-US")
+                        : "—"}
+                  </td>
+                  <td className="p-2 text-xs max-w-[100px] truncate" title={r.branch ?? ""}>
+                    {r.branch ?? "—"}
+                  </td>
                   <td className="p-2 font-mono text-xs">{r.invoice_ref || "—"}</td>
                   <td className="p-2">{r.client_name} <span className="text-xs text-muted-foreground">({r.partner_id})</span></td>
-                  <td className="p-2">{r.product_name}</td>
+                  <td className="p-2 max-w-[160px]">
+                    <span className="line-clamp-2">{r.product_name}</span>
+                  </td>
+                  <td className="p-2 text-xs whitespace-nowrap">
+                    {(() => {
+                      const k =
+                        r.kartela_qty_display != null && r.kartela_qty_display > 0
+                          ? r.kartela_qty_display
+                          : r.is_kartela_line && r.quantity > 0
+                            ? r.quantity
+                            : null;
+                      return k != null ? (
+                        <span
+                          className="inline-flex rounded-full border border-purple-300 bg-purple-50 px-2 py-0.5 font-semibold text-purple-800 dark:border-purple-700 dark:bg-purple-950/40 dark:text-purple-200"
+                          title={
+                            r.is_kartela_line
+                              ? undefined
+                              : isRTL
+                                ? "من تفصيل الأمتار (كارتيلا)"
+                                : "From meter breakdown (kartela)"
+                          }
+                        >
+                          {k.toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                        </span>
+                      ) : (
+                        <span className="text-muted-foreground">—</span>
+                      );
+                    })()}
+                  </td>
                   <td className="p-2">{r.current_status}</td>
                   <td className="p-2 max-w-[220px]" onClick={(e) => e.stopPropagation()}>
                     <Popover
@@ -434,17 +539,35 @@ export function UrgentOrdersManager({
                     </Popover>
                   </td>
                   <td className="p-2" onClick={(e) => e.stopPropagation()}>
-                    <Input
-                      value={assignNote[r.id] ?? r.assigned_note ?? ""}
-                      onChange={(e) => setAssignNote((p) => ({ ...p, [r.id]: e.target.value }))}
-                      placeholder={isRTL ? "اكتب ملاحظة" : "Write note"}
-                      className="h-8 min-w-[180px]"
-                    />
+                    <div className={`flex items-center gap-1.5 ${isRTL ? "flex-row-reverse" : ""}`}>
+                      <Input
+                        value={assignNote[r.id] ?? r.assigned_note ?? ""}
+                        onChange={(e) => setAssignNote((p) => ({ ...p, [r.id]: e.target.value }))}
+                        placeholder={isRTL ? "اكتب ملاحظة" : "Write note"}
+                        className="h-8 min-w-[140px] flex-1"
+                      />
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="secondary"
+                        className="h-8 shrink-0 gap-1 px-2"
+                        disabled={!salespersonId || savingNoteId === r.id}
+                        onClick={() => void saveAssignNote(r)}
+                        title={isRTL ? "حفظ الملاحظة" : "Save note"}
+                      >
+                        {savingNoteId === r.id ? (
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        ) : (
+                          <Save className="h-3.5 w-3.5" />
+                        )}
+                        <span className="hidden sm:inline">{isRTL ? "حفظ" : "Save"}</span>
+                      </Button>
+                    </div>
                   </td>
                 </tr>
               ))}
               {!loading && filtered.length === 0 && (
-                <tr><td className="p-4 text-muted-foreground text-center" colSpan={7}>{isRTL ? "لا توجد طلبات" : "No orders found"}</td></tr>
+                <tr><td className="p-4 text-muted-foreground text-center" colSpan={10}>{isRTL ? "لا توجد طلبات" : "No orders found"}</td></tr>
               )}
             </tbody>
           </table>
