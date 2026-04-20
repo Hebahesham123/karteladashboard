@@ -353,7 +353,7 @@ export default function DashboardPage() {
         }
         return all;
       };
-      const safeCountOnly = async (build: () => Promise<{ count: number | null } | any>) => {
+      const safeCountOnly = async (build: () => any) => {
         try {
           const res = await build();
           return Number((res as any)?.count) || 0;
