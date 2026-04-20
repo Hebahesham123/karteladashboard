@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient as createServerClient } from "@/lib/supabase/server";
 import { createClient } from "@supabase/supabase-js";
+import { resolveAdminBranchScope, resolveAdminScope } from "@/lib/adminScope";
 
 function getServiceClient() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -27,6 +28,15 @@ export async function GET(req: NextRequest) {
   if ("error" in admin) return admin.error;
   const db = getServiceClient();
   if (!db) return NextResponse.json({ error: "Missing server Supabase env" }, { status: 500 });
+  let adminScope;
+  let branchScope;
+  try {
+    adminScope = await resolveAdminScope(db, admin.userId);
+    branchScope = await resolveAdminBranchScope(db, admin.userId);
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : "Forbidden";
+    return NextResponse.json({ error: msg }, { status: msg === "Forbidden" ? 403 : 500 });
+  }
 
   const branchParam = req.nextUrl.searchParams.get("branch");
   const limit = Math.min(500, Math.max(20, Number(req.nextUrl.searchParams.get("limit")) || 200));
@@ -34,6 +44,12 @@ export async function GET(req: NextRequest) {
 
   if (branchParam === null) {
     return NextResponse.json({ error: "branch query required (use __none__ for empty branch)" }, { status: 400 });
+  }
+  if (!adminScope.isSuperAdmin) {
+    const allowedBranches = new Set((branchScope.branches ?? []).map((b) => b.toLowerCase()));
+    if (allowedBranches.size > 0 && branchParam !== "__none__" && !allowedBranches.has(branchParam.toLowerCase())) {
+      return NextResponse.json({ error: "Forbidden for this branch" }, { status: 403 });
+    }
   }
 
   const isNone = branchParam === "__none__";
@@ -46,6 +62,9 @@ export async function GET(req: NextRequest) {
     .order("month", { ascending: false })
     .order("created_at", { ascending: false })
     .range(offset, offset + limit - 1);
+  if (!adminScope.isSuperAdmin && adminScope.salespersonIds.length > 0) {
+    q = q.in("salesperson_id", adminScope.salespersonIds);
+  }
 
   if (isNone) {
     q = q.or('branch.is.null,branch.eq.""');

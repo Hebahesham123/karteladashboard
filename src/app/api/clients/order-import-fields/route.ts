@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient as createServerClient } from "@/lib/supabase/server";
 import { createClient } from "@supabase/supabase-js";
 import { fetchClientLatestOrderLineFields, type ClientOrderImportFields } from "@/lib/orderImportMeta";
+import { resolveAdminBranchScope, resolveAdminScope } from "@/lib/adminScope";
 
 function getServiceClient() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -47,6 +48,44 @@ export async function POST(req: NextRequest) {
   if (clientIds.length > 4000) return NextResponse.json({ error: "Too many clientIds" }, { status: 400 });
 
   let allowedIds = clientIds;
+  let allowedBranches: string[] | undefined;
+  const db = getServiceClient();
+  if (!db) {
+    return NextResponse.json(
+      {
+        error:
+          "Missing SUPABASE_SERVICE_ROLE_KEY on the server — order import columns cannot load. Add it to your deployment environment.",
+      },
+      { status: 503 }
+    );
+  }
+
+  if (role === "admin") {
+    let scope;
+    let branchScope;
+    try {
+      scope = await resolveAdminScope(db, user.id);
+      branchScope = await resolveAdminBranchScope(db, user.id);
+    } catch (e: unknown) {
+      return NextResponse.json({ error: e instanceof Error ? e.message : "Forbidden" }, { status: 403 });
+    }
+    const branchList = (branchScope?.branches ?? []).map((b) => String(b).trim()).filter(Boolean);
+    if (!scope.isSuperAdmin && branchList.length > 0) {
+      allowedBranches = branchList;
+    }
+    if (!scope.isSuperAdmin) {
+      if (scope.salespersonIds.length === 0) return NextResponse.json({ fields: {} });
+      const { data: okClients, error: ocErr } = await db
+        .from("clients")
+        .select("id")
+        .in("id", clientIds)
+        .in("salesperson_id", scope.salespersonIds);
+      if (ocErr) return NextResponse.json({ error: ocErr.message }, { status: 500 });
+      allowedIds = (okClients ?? []).map((c) => c.id);
+      if (allowedIds.length === 0) return NextResponse.json({ fields: {} });
+    }
+  }
+
   if (role === "sales") {
     const { data: sp } = await userClient.from("salespersons").select("id").eq("user_id", user.id).maybeSingle();
     if (!sp?.id) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
@@ -60,23 +99,14 @@ export async function POST(req: NextRequest) {
     if (allowedIds.length === 0) return NextResponse.json({ fields: {} });
   }
 
-  const db = getServiceClient();
-  if (!db) {
-    return NextResponse.json(
-      {
-        error:
-          "Missing SUPABASE_SERVICE_ROLE_KEY on the server — order import columns cannot load. Add it to your deployment environment.",
-      },
-      { status: 503 }
-    );
-  }
-
   const month = body.fallback ? undefined : body.month;
   const year = body.fallback ? undefined : body.year;
   const opts =
     month != null && year != null && Number.isFinite(month) && Number.isFinite(year)
-      ? { month: Number(month), year: Number(year) }
-      : undefined;
+      ? { month: Number(month), year: Number(year), ...(allowedBranches ? { allowedBranches } : {}) }
+      : allowedBranches
+        ? { allowedBranches }
+        : undefined;
 
   const merged = new Map<string, ClientOrderImportFields>();
   const CHUNK = 400;

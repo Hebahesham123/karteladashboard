@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient as createServerClient } from "@/lib/supabase/server";
 import { createClient } from "@supabase/supabase-js";
+import { canAccessSalesperson, resolveAdminScope } from "@/lib/adminScope";
 
 function getServiceClient() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -27,6 +28,14 @@ export async function GET(req: NextRequest) {
   if ("error" in admin) return admin.error;
   const db = getServiceClient();
   if (!db) return NextResponse.json({ error: "Missing server Supabase env" }, { status: 500 });
+  let scope;
+  try {
+    scope = await resolveAdminScope(db, admin.userId);
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : "Forbidden";
+    const status = msg === "Forbidden" ? 403 : 500;
+    return NextResponse.json({ error: msg }, { status });
+  }
 
   const orderId = req.nextUrl.searchParams.get("orderId");
   const salespersonId = req.nextUrl.searchParams.get("salespersonId");
@@ -42,6 +51,9 @@ export async function GET(req: NextRequest) {
 
   if (orderErr) return NextResponse.json({ error: orderErr.message }, { status: 500 });
   if (!orderRow) return NextResponse.json({ error: "Order not found" }, { status: 404 });
+  if (!canAccessSalesperson(scope, String(orderRow.salesperson_id ?? ""))) {
+    return NextResponse.json({ error: "Forbidden for this order" }, { status: 403 });
+  }
 
   const clientId = orderRow.client_id as string | null;
   const productId = orderRow.product_id as string | null;
@@ -66,6 +78,9 @@ export async function GET(req: NextRequest) {
   type AssignmentRow = { is_active: boolean; note: string | null; client_status: string | null };
   let assignment: AssignmentRow | null = null;
   if (salespersonId) {
+    if (!canAccessSalesperson(scope, salespersonId)) {
+      return NextResponse.json({ error: "Forbidden for this salesperson" }, { status: 403 });
+    }
     const res = await db
       .from("urgent_order_assignments")
       .select("is_active, note, client_status")

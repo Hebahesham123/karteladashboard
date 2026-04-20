@@ -772,7 +772,10 @@ export default function ComparisonPage() {
     async (period: Period, selectedMode: CompareMode, tk: TypeKind, tv: string): Promise<Map<string, number>> => {
     const supabase = createClient();
     const spFilter = currentUser?.role === "sales" ? salespersonId : null;
-    const useOrderSource = tk !== "all" && tv.trim() !== "";
+    const isScopedAdmin =
+      currentUser?.role === "admin" &&
+      !Boolean((currentUser as { is_super_admin?: boolean | null } | null)?.is_super_admin ?? false);
+    const useOrderSource = (tk !== "all" && tv.trim() !== "") || isScopedAdmin;
 
     if (useOrderSource) {
       const rows = await fetchOrdersForComparisonPeriod(supabase, period, tk, tv, spFilter);

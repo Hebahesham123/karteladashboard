@@ -5,8 +5,10 @@ import {
   fetchDistinctCategoriesAndPricelists,
   fetchClientIdsForSalesperson,
   fetchDistinctFromOrdersForClients,
+  fetchDistinctFromOrdersForSalespersons,
 } from "@/lib/orderImportMeta";
 import { getOrSetServerCache } from "@/lib/serverResponseCache";
+import { resolveAdminScope } from "@/lib/adminScope";
 
 /**
  * Distinct order.category / order.pricelist for the selected calendar month.
@@ -53,6 +55,20 @@ export async function GET(req: NextRequest) {
   });
 
   if (profile.role === "admin") {
+    let scope;
+    try {
+      scope = await resolveAdminScope(admin, user.id);
+    } catch (e: unknown) {
+      return NextResponse.json({ error: e instanceof Error ? e.message : "Forbidden" }, { status: 403 });
+    }
+    if (!scope.isSuperAdmin) {
+      const r = await getOrSetServerCache(
+        `order-distinct:admin-scoped:${user.id}:${m}:${y}`,
+        60_000,
+        () => fetchDistinctFromOrdersForSalespersons(admin, scope.salespersonIds, m, y)
+      );
+      return NextResponse.json(r);
+    }
     const r = await getOrSetServerCache(
       `order-distinct:admin:${m}:${y}`,
       60_000,

@@ -15,6 +15,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const { locale, setLocale, sidebarCollapsed, toggleSidebar, setSidebarCollapsed, currentUser, setCurrentUser, setSalespersonId } = useStore();
   const [loading, setLoading] = useState(true);
+  const [adminAreaTitle, setAdminAreaTitle] = useState<string | null>(null);
   const isRTL = locale === "ar";
 
   useEffect(() => {
@@ -36,6 +37,21 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
 
       if (user) {
         setCurrentUser(user);
+        if (user.role === "admin") {
+          try {
+            const res = await fetch("/api/me/admin-area", { credentials: "include", cache: "no-store" });
+            const json = await res.json();
+            if (res.ok) {
+              setAdminAreaTitle((json?.label as string | null) ?? null);
+            } else {
+              setAdminAreaTitle(null);
+            }
+          } catch {
+            setAdminAreaTitle(null);
+          }
+        } else {
+          setAdminAreaTitle(null);
+        }
         // If sales role, look up their salesperson record
         if (user.role === "sales") {
           let { data: sp } = await supabase
@@ -181,6 +197,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
           onLocaleChange={handleLocaleChange}
           user={currentUser || undefined}
           onMenuToggle={toggleSidebar}
+          adminAreaTitle={adminAreaTitle}
         />
 
         <main className="p-2 pb-4 sm:p-4 md:p-6 overflow-x-hidden max-w-[100vw]">

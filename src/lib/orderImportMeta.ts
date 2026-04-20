@@ -123,6 +123,64 @@ export async function fetchDistinctFromOrdersForClients(
   };
 }
 
+/** Distinct category/pricelist for orders in month/year belonging to given salespersons (paginated per salesperson batch). */
+export async function fetchDistinctFromOrdersForSalespersons(
+  supabase: SupabaseClient,
+  salespersonIds: string[],
+  month: number,
+  year: number,
+  opts?: { salespersonChunk?: number; pageSize?: number }
+): Promise<{ categories: string[]; pricelists: string[]; error: string | null }> {
+  const salespersonChunk = opts?.salespersonChunk ?? 80;
+  const pageSize = opts?.pageSize ?? 1000;
+  const catSet = new Set<string>();
+  const plSet = new Set<string>();
+
+  if (salespersonIds.length === 0) {
+    return { categories: [], pricelists: [], error: null };
+  }
+
+  for (let i = 0; i < salespersonIds.length; i += salespersonChunk) {
+    const chunk = salespersonIds.slice(i, i + salespersonChunk);
+    let from = 0;
+    for (;;) {
+      const { data, error } = await supabase
+        .from("orders")
+        .select("category, pricelist")
+        .eq("month", month)
+        .eq("year", year)
+        .in("salesperson_id", chunk)
+        .order("id", { ascending: true })
+        .range(from, from + pageSize - 1);
+
+      if (error) {
+        return {
+          categories: Array.from(catSet).sort(sortLocale),
+          pricelists: Array.from(plSet).sort(sortLocale),
+          error: error.message,
+        };
+      }
+      if (!data?.length) break;
+
+      for (const r of data as { category?: string | null; pricelist?: string | null }[]) {
+        const c = String(r.category ?? "").trim();
+        if (c) catSet.add(c);
+        const pl = String(r.pricelist ?? "").trim();
+        if (pl) plSet.add(pl);
+      }
+
+      if (data.length < pageSize) break;
+      from += pageSize;
+    }
+  }
+
+  return {
+    categories: Array.from(catSet).sort(sortLocale),
+    pricelists: Array.from(plSet).sort(sortLocale),
+    error: null,
+  };
+}
+
 /** All client ids assigned to a salesperson (paginated). */
 export async function fetchClientIdsForSalesperson(
   supabase: SupabaseClient,
@@ -340,7 +398,7 @@ export async function fetchClientLatestOrderImportFallbackFields(
 export async function fetchClientLatestOrderLineFields(
   supabase: SupabaseClient,
   clientIds: string[],
-  opts?: { month?: number; year?: number; chunkSize?: number }
+  opts?: { month?: number; year?: number; chunkSize?: number; allowedBranches?: string[] }
 ): Promise<{ byClient: Map<string, ClientOrderImportFields>; error: string | null }> {
   const byClient = new Map<string, ClientOrderImportFields>();
   let lastError: string | null = null;
@@ -369,6 +427,9 @@ export async function fetchClientLatestOrderLineFields(
 
       if (opts?.month != null && opts?.year != null) {
         q = q.eq("month", opts.month).eq("year", opts.year);
+      }
+      if (opts?.allowedBranches && opts.allowedBranches.length > 0) {
+        q = q.in("branch", opts.allowedBranches);
       }
 
       const { data, error } = await q;

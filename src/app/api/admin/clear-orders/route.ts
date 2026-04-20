@@ -16,9 +16,12 @@ async function requireAdmin() {
     data: { user },
   } = await supabase.auth.getUser();
   if (!user) return { error: NextResponse.json({ error: "Unauthorized" }, { status: 401 }) };
-  const { data: profile } = await supabase.from("users").select("id, role").eq("id", user.id).maybeSingle();
+  const { data: profile } = await supabase.from("users").select("id, role, is_super_admin").eq("id", user.id).maybeSingle();
   if (!profile || profile.role !== "admin") {
     return { error: NextResponse.json({ error: "Forbidden" }, { status: 403 }) };
+  }
+  if (!Boolean((profile as { is_super_admin?: boolean | null }).is_super_admin ?? false)) {
+    return { error: NextResponse.json({ error: "Forbidden: super admin only" }, { status: 403 }) };
   }
   return { userId: user.id };
 }

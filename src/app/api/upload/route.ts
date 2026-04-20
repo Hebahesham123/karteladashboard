@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { invalidateServerCache } from "@/lib/serverResponseCache";
+import { createClient as createServerClient } from "@/lib/supabase/server";
 
 /** Fetch ALL rows from a table with pagination (avoids URL-length and encoding issues) */
 async function fetchAll<T>(db: any, table: string, selectColumns: string): Promise<T[]> {
@@ -19,6 +20,20 @@ async function fetchAll<T>(db: any, table: string, selectColumns: string): Promi
 }
 
 export async function POST(req: NextRequest) {
+  const userClient = createServerClient();
+  const {
+    data: { user },
+  } = await userClient.auth.getUser();
+  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const { data: profile } = await userClient
+    .from("users")
+    .select("id, role, is_super_admin")
+    .eq("id", user.id)
+    .maybeSingle();
+  if (!profile || profile.role !== "admin" || !Boolean((profile as any).is_super_admin)) {
+    return NextResponse.json({ error: "Forbidden: super admin only" }, { status: 403 });
+  }
+
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
   const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
 

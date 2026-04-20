@@ -50,7 +50,7 @@ import type { ClientOrderImportFields } from "@/lib/orderImportMeta";
 import { isKartelaProductName, kartelaFamilyBaseKey } from "@/lib/kartelaProduct";
 import type { ClientStatus, OrderLevel } from "@/types/database";
 
-const CLIENTS_PERSIST_PREFIX = "clients_boot_v6:";
+const CLIENTS_PERSIST_PREFIX = "clients_boot_v7:";
 
 interface ClientRow {
   id: string;
@@ -163,7 +163,7 @@ export default function ClientsPage() {
     const selectedMonth = filters.selectedMonth ?? (now.getMonth() + 1);
     const selectedYear  = filters.selectedYear  ?? now.getFullYear();
     const spFilter      = salespersonId || filters.selectedSalesperson;
-    const cacheKey = `clients_v16:${selectedYear}-${selectedMonth}-${spFilter || "all"}`;
+    const cacheKey = `clients_v17:${selectedYear}-${selectedMonth}-${spFilter || "all"}`;
     const persistKey = `${CLIENTS_PERSIST_PREFIX}${cacheKey}`;
 
     // ── Global session cache hit → render instantly ──────────────────────
@@ -360,6 +360,9 @@ export default function ClientsPage() {
       // Step C: row-exact data per client from ONE latest order line in selected month.
       // Uses server API + service role so Odoo lines with a different orders.salesperson_id still appear (RLS-safe).
       let importFieldsError: string | null = null;
+      const isScopedAdmin =
+        currentUser?.role === "admin" &&
+        !Boolean((currentUser as { is_super_admin?: boolean | null } | null)?.is_super_admin ?? false);
       const fetchOrderImportFieldsMap = async (
         ids: string[],
         mode: { month: number; year: number } | { fallback: true }
@@ -386,16 +389,29 @@ export default function ClientsPage() {
       };
 
       // Prefer columns from client_monthly_metrics (DB view); API only fills gaps.
-      const idsForImport = combined
-        .filter(
-          (c) =>
-            !c.order_import_category ||
-            !c.order_import_pricelist ||
-            !c.order_import_invoice ||
-            !c.order_import_branch ||
-            !c.order_import_day_date
-        )
-        .map((c) => c.id);
+      if (isScopedAdmin) {
+        // Strict branch mode: never keep import fields coming from precomputed views.
+        // We refill these only from the scoped API response.
+        combined.forEach((c) => {
+          c.order_import_category = null;
+          c.order_import_pricelist = null;
+          c.order_import_invoice = null;
+          c.order_import_branch = null;
+          c.order_import_day_date = null;
+        });
+      }
+      const idsForImport = isScopedAdmin
+        ? combined.map((c) => c.id)
+        : combined
+            .filter(
+              (c) =>
+                !c.order_import_category ||
+                !c.order_import_pricelist ||
+                !c.order_import_invoice ||
+                !c.order_import_branch ||
+                !c.order_import_day_date
+            )
+            .map((c) => c.id);
       if (idsForImport.length > 0) {
         const mergedByClient = new Map<string, ClientOrderImportFields>();
         const CHUNK = 800;

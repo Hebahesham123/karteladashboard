@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient as createServerClient } from "@/lib/supabase/server";
 import { createClient } from "@supabase/supabase-js";
 import { invalidateServerCache } from "@/lib/serverResponseCache";
+import { canAccessSalesperson, resolveAdminScope } from "@/lib/adminScope";
 
 function getServiceClient() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -30,16 +31,27 @@ export async function GET(req: NextRequest) {
   if ("error" in admin) return admin.error;
   const db = getServiceClient();
   if (!db) return NextResponse.json({ error: "Missing server Supabase env" }, { status: 500 });
+  let scope;
+  try {
+    scope = await resolveAdminScope(db, admin.userId);
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : "Forbidden";
+    const status = msg === "Forbidden" ? 403 : 500;
+    return NextResponse.json({ error: msg }, { status });
+  }
 
   const orderId = req.nextUrl.searchParams.get("orderId");
   if (!orderId) return NextResponse.json({ error: "orderId is required" }, { status: 400 });
 
   const { data: orderRow, error: orderErr } = await db
     .from("orders")
-    .select("id, client_id")
+    .select("id, client_id, salesperson_id")
     .eq("id", orderId)
     .maybeSingle();
   if (orderErr) return NextResponse.json({ error: orderErr.message }, { status: 500 });
+  if (!orderRow || !canAccessSalesperson(scope, String(orderRow.salesperson_id ?? ""))) {
+    return NextResponse.json({ error: "Forbidden for this order" }, { status: 403 });
+  }
 
   const { data: orderLogs, error: orderLogsErr } = await db
     .from("activity_logs")
@@ -94,6 +106,14 @@ export async function POST(req: NextRequest) {
   if ("error" in admin) return admin.error;
   const db = getServiceClient();
   if (!db) return NextResponse.json({ error: "Missing server Supabase env" }, { status: 500 });
+  let scope;
+  try {
+    scope = await resolveAdminScope(db, admin.userId);
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : "Forbidden";
+    const status = msg === "Forbidden" ? 403 : 500;
+    return NextResponse.json({ error: msg }, { status });
+  }
 
   const body = (await req.json()) as {
     orderId?: string;
@@ -103,6 +123,15 @@ export async function POST(req: NextRequest) {
   const orderId = (body.orderId ?? "").trim();
   const note = (body.note ?? "").trim();
   if (!orderId || !note) return NextResponse.json({ error: "orderId and note are required" }, { status: 400 });
+  const { data: orderRow, error: orderErr } = await db
+    .from("orders")
+    .select("id, salesperson_id")
+    .eq("id", orderId)
+    .maybeSingle();
+  if (orderErr) return NextResponse.json({ error: orderErr.message }, { status: 500 });
+  if (!orderRow || !canAccessSalesperson(scope, String(orderRow.salesperson_id ?? ""))) {
+    return NextResponse.json({ error: "Forbidden for this order" }, { status: 403 });
+  }
 
   const { error } = await db.from("activity_logs").insert({
     user_id: admin.userId,

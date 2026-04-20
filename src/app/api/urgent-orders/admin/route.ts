@@ -3,6 +3,7 @@ import { createClient as createServerClient } from "@/lib/supabase/server";
 import { createClient } from "@supabase/supabase-js";
 import { getOrSetServerCache, invalidateServerCache } from "@/lib/serverResponseCache";
 import { isKartelaProductName, kartelaMetersFromMeterBreakdown } from "@/lib/kartelaProduct";
+import { canAccessSalesperson, filterSalespersonsByScope, resolveAdminBranchScope, resolveAdminScope } from "@/lib/adminScope";
 
 function getServiceClient() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -29,30 +30,68 @@ export async function GET(req: NextRequest) {
   if ("error" in admin) return admin.error;
   const db = getServiceClient();
   if (!db) return NextResponse.json({ error: "Missing server Supabase env" }, { status: 500 });
+  let scope;
+  let branchScope = { branches: [] as string[] };
+  try {
+    scope = await resolveAdminScope(db, admin.userId);
+    branchScope = await resolveAdminBranchScope(db, admin.userId);
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : "Forbidden";
+    const status = msg === "Forbidden" ? 403 : 500;
+    return NextResponse.json({ error: msg }, { status });
+  }
+
+  const scopedBranches = (branchScope.branches ?? []).map((b) => String(b).trim()).filter(Boolean);
+  const scopeSalespersonIds = new Set<string>(scope.salespersonIds);
+  if (!scope.isSuperAdmin && scopeSalespersonIds.size === 0 && scopedBranches.length > 0) {
+    for (const branch of scopedBranches) {
+      const { data, error } = await db
+        .from("orders")
+        .select("salesperson_id")
+        .ilike("branch", `%${branch}%`)
+        .not("salesperson_id", "is", null)
+        .limit(5000);
+      if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+      for (const row of data ?? []) {
+        const sid = String((row as { salesperson_id?: string | null }).salesperson_id ?? "").trim();
+        if (sid) scopeSalespersonIds.add(sid);
+      }
+    }
+  }
 
   const salespersonId = req.nextUrl.searchParams.get("salespersonId");
   const month = Number(req.nextUrl.searchParams.get("month"));
   const year = Number(req.nextUrl.searchParams.get("year"));
   if (!salespersonId) return NextResponse.json({ error: "salespersonId is required" }, { status: 400 });
 
-  const sps = await getOrSetServerCache("urgent-admin:salespersons", 60_000, async () => {
+  const sps = await getOrSetServerCache(`urgent-admin:salespersons:${admin.userId}`, 60_000, async () => {
     const { data, error } = await db
       .from("salespersons")
       .select("id, code, name")
       .eq("is_active", true)
       .order("name");
     if (error) throw new Error(error.message);
-    return data ?? [];
+    const rows = (data ?? []) as { id: string; code: string; name: string }[];
+    if (scope.isSuperAdmin) return rows;
+    if (scopeSalespersonIds.size > 0) return rows.filter((r) => scopeSalespersonIds.has(r.id));
+    return filterSalespersonsByScope(scope, rows);
   });
 
   if (salespersonId === "__init__") {
     return NextResponse.json({ salespersons: sps ?? [], rows: [] });
   }
+  if (!scope.isSuperAdmin) {
+    const allowedByDerived = scopeSalespersonIds.size > 0 ? scopeSalespersonIds.has(salespersonId) : false;
+    const allowedByScope = canAccessSalesperson(scope, salespersonId);
+    if (!allowedByDerived && !allowedByScope) {
+      return NextResponse.json({ error: "Forbidden for this salesperson" }, { status: 403 });
+    }
+  }
 
   const monthKey = Number.isFinite(month) && month >= 1 && month <= 12 ? month : "all";
   const yearKey = Number.isFinite(year) && year >= 2000 && year <= 2100 ? year : "all";
   const rows = await getOrSetServerCache(
-    `urgent-admin:rows:v2:${salespersonId}:${monthKey}:${yearKey}`,
+    `urgent-admin:rows:v2:${admin.userId}:${salespersonId}:${monthKey}:${yearKey}`,
     20_000,
     async () => {
       let orderQ = db
@@ -226,6 +265,14 @@ export async function POST(req: NextRequest) {
   if ("error" in admin) return admin.error;
   const db = getServiceClient();
   if (!db) return NextResponse.json({ error: "Missing server Supabase env" }, { status: 500 });
+  let scope;
+  try {
+    scope = await resolveAdminScope(db, admin.userId);
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : "Forbidden";
+    const status = msg === "Forbidden" ? 403 : 500;
+    return NextResponse.json({ error: msg }, { status });
+  }
 
   const body = (await req.json()) as {
     orderId?: string;
@@ -243,6 +290,9 @@ export async function POST(req: NextRequest) {
         { status: 400 }
       );
     }
+    if (!canAccessSalesperson(scope, body.salespersonId)) {
+      return NextResponse.json({ error: "Forbidden for this salesperson" }, { status: 403 });
+    }
     const { error } = await db.from("urgent_order_assignments").upsert(
       {
         order_id: body.orderId,
@@ -254,13 +304,16 @@ export async function POST(req: NextRequest) {
       { onConflict: "order_id,salesperson_id" }
     );
     if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-    invalidateServerCache(`urgent-admin:rows:v2:${body.salespersonId}:`);
+    invalidateServerCache(`urgent-admin:rows:v2:${admin.userId}:${body.salespersonId}:`);
     invalidateServerCache("urgent-my:");
     return NextResponse.json({ ok: true });
   }
 
   if (!body.orderId || !body.salespersonId || typeof body.assigned !== "boolean") {
     return NextResponse.json({ error: "orderId, salespersonId and assigned are required" }, { status: 400 });
+  }
+  if (!canAccessSalesperson(scope, body.salespersonId)) {
+    return NextResponse.json({ error: "Forbidden for this salesperson" }, { status: 403 });
   }
 
   if (body.assigned) {
@@ -284,7 +337,7 @@ export async function POST(req: NextRequest) {
     if (error) return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
-  invalidateServerCache(`urgent-admin:rows:v2:${body.salespersonId}:`);
+  invalidateServerCache(`urgent-admin:rows:v2:${admin.userId}:${body.salespersonId}:`);
   invalidateServerCache("urgent-my:");
 
   return NextResponse.json({ ok: true });

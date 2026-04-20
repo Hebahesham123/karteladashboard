@@ -19,9 +19,10 @@ interface NavbarProps {
   onLocaleChange: (_: string) => void;
   user?: { full_name: string; email: string; role: string };
   onMenuToggle?: () => void;
+  adminAreaTitle?: string | null;
 }
 
-export function Navbar({ locale, onLocaleChange, user, onMenuToggle }: NavbarProps) {
+export function Navbar({ locale, onLocaleChange, user, onMenuToggle, adminAreaTitle }: NavbarProps) {
   const { theme, setTheme } = useTheme();
   const isRTL = locale === "ar";
 
@@ -85,7 +86,11 @@ export function Navbar({ locale, onLocaleChange, user, onMenuToggle }: NavbarPro
               </Avatar>
               <div className="hidden md:flex flex-col items-start">
                 <span className="text-sm font-medium leading-none">{user?.full_name}</span>
-                <span className="text-xs text-muted-foreground capitalize">{user?.role}</span>
+                <span className="text-xs text-muted-foreground capitalize max-w-44 truncate">
+                  {user?.role === "admin" && adminAreaTitle
+                    ? `${isRTL ? "المنطقة:" : "Area:"} ${adminAreaTitle}`
+                    : user?.role}
+                </span>
               </div>
             </Button>
           </DropdownMenuTrigger>

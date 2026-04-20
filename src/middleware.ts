@@ -39,9 +39,21 @@ export async function middleware(request: NextRequest) {
     }
   );
 
-  const {
-    data: { session },
-  } = await supabase.auth.getSession();
+  let session: any = null;
+  try {
+    const res = await supabase.auth.getSession();
+    session = res.data.session;
+  } catch {
+    // Stale/invalid refresh cookie can throw here; treat as logged-out.
+    const clean = NextResponse.redirect(new URL("/login", request.url));
+    const toClear = request.cookies.getAll().map((c) => c.name);
+    for (const name of toClear) {
+      if (name.includes("sb-") || name.includes("supabase")) {
+        clean.cookies.set(name, "", { path: "/", maxAge: 0 });
+      }
+    }
+    return clean;
+  }
 
   const { pathname } = request.nextUrl;
 

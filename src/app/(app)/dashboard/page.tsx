@@ -320,6 +320,15 @@ export default function DashboardPage() {
 
     try {
       const PAGE_SIZE = 1000;
+      const monthsInRange = (() => {
+        const out: { month: number; year: number }[] = [];
+        for (let v = startVal; v <= endVal; v += 1) {
+          const y = Math.floor(v / 12);
+          const m = v % 12 || 12;
+          out.push({ month: m, year: m === 12 ? y - 1 : y });
+        }
+        return out;
+      })();
 
       const safePages = async (table: string, cols: string, applyFilters: (q: any) => any) => {
         const all: any[] = [];
@@ -343,6 +352,14 @@ export default function DashboardPage() {
           from += PAGE_SIZE;
         }
         return all;
+      };
+      const safeCountOnly = async (build: () => Promise<{ count: number | null } | any>) => {
+        try {
+          const res = await build();
+          return Number((res as any)?.count) || 0;
+        } catch {
+          return 0;
+        }
       };
 
       // Aggregate per-client across all months in the range
@@ -381,23 +398,51 @@ export default function DashboardPage() {
         if (selectedClientIds.length > 0) qq = qq.in("client_id", selectedClientIds);
         return qq;
       };
+      const getKpiRows = async () => {
+        try {
+          return await safePages(
+            "client_monthly_metrics",
+            "client_id, total_meters, total_revenue, order_count, cartela_count, level, month, year, customer_type",
+            kpiQuery
+          );
+        } catch {
+          const merged: any[] = [];
+          // Timeout fallback: fetch period month-by-month.
+          for (const p of monthsInRange) {
+            const rows = await safePages(
+              "client_monthly_metrics",
+              "client_id, total_meters, total_revenue, order_count, cartela_count, level, month, year, customer_type",
+              (q) => {
+                let qq = q.eq("month", p.month).eq("year", p.year);
+                if (spFilter) qq = qq.eq("salesperson_id", spFilter);
+                qq = qq.in("customer_type", custTypesForFilter);
+                if (selectedProductNames.length > 0) qq = qq.in("top_product_name", selectedProductNames);
+                if (selectedClientIds.length > 0) qq = qq.in("client_id", selectedClientIds);
+                return qq;
+              }
+            );
+            merged.push(...rows);
+          }
+          return merged;
+        }
+      };
 
       const [
         kpiRowsRaw,
         countResult,
         orderCountRes,
       ] = await Promise.all([
-        // KPI rows from client_monthly_metrics
-        safePages("client_monthly_metrics", "client_id, total_meters, total_revenue, order_count, cartela_count, level, month, year, customer_type", kpiQuery),
+        // KPI rows from client_monthly_metrics (with timeout fallback)
+        getKpiRows(),
         // Total client count (head only — no rows transferred)
-        (() => {
+        safeCountOnly(() => {
           let q = supabase.from("clients").select("id", { count: "exact", head: true }).in("customer_type", custTypesForFilter);
           if (spFilter) q = q.eq("salesperson_id", spFilter);
           if (selectedClientIds.length > 0) q = q.in("id", selectedClientIds);
           return q;
-        })(),
+        }),
         // Order count for the selected period (client filter only; product filter uses KPI row sum below)
-        (() => {
+        safeCountOnly(() => {
           let q = supabase
             .from("orders")
             .select("id", { count: "exact", head: true })
@@ -407,13 +452,13 @@ export default function DashboardPage() {
           if (spFilter) q = q.eq("salesperson_id", spFilter);
           if (selectedClientIds.length > 0) q = q.in("client_id", selectedClientIds);
           return q;
-        })(),
+        }),
       ]);
 
       let kpiRows = kpiRowsRaw;
-      const denominatorCount = (countResult as any)?.count || 0;
+      const denominatorCount = Number(countResult) || 0;
       setTotalClientCount(denominatorCount);
-      let orderCountFinal = (orderCountRes as any)?.count || 0;
+      let orderCountFinal = Number(orderCountRes) || 0;
 
       // Client-side guard for exact boundaries (needed for cross-year ranges)
       kpiRows = kpiRows.filter((r: any) => inRange(Number(r.month), Number(r.year)));
