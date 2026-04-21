@@ -164,6 +164,9 @@ export default function DashboardPage() {
   const [spOpen,   setSpOpen]   = useState(false);
   const [prodOpen, setProdOpen] = useState(false);
   const [salespersons, setSalespersons] = useState<{ id: string; name: string }[]>([]);
+  const [branches, setBranches] = useState<string[]>([]);
+  const [selectedBranches, setSelectedBranches] = useState<string[]>([]);
+  const [branchOpen, setBranchOpen] = useState(false);
   const dashYears = Array.from({ length: 3 }, (_, i) => now.getFullYear() - i);
 
   // Load salesperson + product lists once (customer types: VIP / تجاري / جملة)
@@ -192,6 +195,35 @@ export default function DashboardPage() {
     if (spFilter) q = q.eq("salesperson_id", spFilter);
     q.then(({ data }) => setClientPickerOptions((data as { id: string; name: string; partner_id: string }[]) || []));
   }, [filters.selectedSalesperson, salespersonId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch("/api/branches", { credentials: "include" });
+        const json = (await res.json()) as {
+          branches?: Array<{ branch: string | null }>;
+          error?: string;
+        };
+        if (!res.ok) throw new Error(json.error || "Failed to load branches");
+        const vals = new Set<string>();
+        for (const row of json.branches ?? []) {
+          const b = String(row.branch ?? "").trim();
+          if (b) vals.add(b);
+        }
+        if (!cancelled) {
+          const sorted = Array.from(vals).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
+          setBranches(sorted);
+          setSelectedBranches((prev) => prev.filter((b) => vals.has(b)));
+        }
+      } catch {
+        if (!cancelled) setBranches([]);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // ── Rankings date range (independent from main KPI filter) ───────────────
 
@@ -225,7 +257,8 @@ export default function DashboardPage() {
     const prodKey = [...selectedProductNames].sort().join("|");
     const cliKey = [...selectedClientIds].sort().join("|");
     const custKey = [...selectedCustTypes].sort().join("|");
-    const cacheKey = `dash_v7:${dashFrom.year}-${dashFrom.month}:${dashTo.year}-${dashTo.month}-${spFilter || "all"}-${prodKey}-${cliKey}-${custKey}`;
+    const branchKey = selectedBranches.length > 0 ? selectedBranches.slice().sort().join("|") : "all-branches";
+    const cacheKey = `dash_v8:${dashFrom.year}-${dashFrom.month}:${dashTo.year}-${dashTo.month}-${spFilter || "all"}-${branchKey}-${prodKey}-${cliKey}-${custKey}`;
     const persistKey = `${DASH_PERSIST_PREFIX}${cacheKey}`;
 
     // ── Global session cache hit ──────────────────────────────────────────
@@ -393,6 +426,7 @@ export default function DashboardPage() {
         let qq = q.gte("year", dashFrom.year).lte("year", dashTo.year);
         if (dashFrom.year === dashTo.year) qq = qq.gte("month", dashFrom.month).lte("month", dashTo.month);
         if (spFilter) qq = qq.eq("salesperson_id", spFilter);
+        if (selectedBranches.length > 0) qq = qq.in("order_import_branch", selectedBranches);
         qq = qq.in("customer_type", custTypesForFilter);
         if (selectedProductNames.length > 0) qq = qq.in("top_product_name", selectedProductNames);
         if (selectedClientIds.length > 0) qq = qq.in("client_id", selectedClientIds);
@@ -450,6 +484,7 @@ export default function DashboardPage() {
             .lte("year", dashTo.year);
           if (dashFrom.year === dashTo.year) q = q.gte("month", dashFrom.month).lte("month", dashTo.month);
           if (spFilter) q = q.eq("salesperson_id", spFilter);
+          if (selectedBranches.length > 0) q = q.in("branch", selectedBranches);
           if (selectedClientIds.length > 0) q = q.in("client_id", selectedClientIds);
           return q;
         }),
@@ -472,6 +507,7 @@ export default function DashboardPage() {
             .order("month", { ascending: false })
             .limit(1);
           if (spFilter) q = q.eq("salesperson_id", spFilter);
+          if (selectedBranches.length > 0) q = q.in("order_import_branch", selectedBranches);
           return q;
         })();
         const latest = latestQ.data?.[0];
@@ -570,6 +606,7 @@ export default function DashboardPage() {
           (q) => {
             let qq = q.eq("month", prevEndMonth).eq("year", prevEndYear).in("customer_type", custTypesForFilter);
             if (spFilter) qq = qq.eq("salesperson_id", spFilter);
+            if (selectedBranches.length > 0) qq = qq.in("order_import_branch", selectedBranches);
             if (selectedProductNames.length > 0) qq = qq.in("top_product_name", selectedProductNames);
             if (selectedClientIds.length > 0) qq = qq.in("client_id", selectedClientIds);
             return qq;
@@ -601,6 +638,7 @@ export default function DashboardPage() {
             .eq("month", prevEndMonth)
             .eq("year", prevEndYear);
           if (spFilter) oq = oq.eq("salesperson_id", spFilter);
+          if (selectedBranches.length > 0) oq = oq.in("branch", selectedBranches);
           if (selectedClientIds.length > 0) oq = oq.in("client_id", selectedClientIds);
           const { count } = await oq;
           prevO = (count as number) || 0;
@@ -692,7 +730,7 @@ export default function DashboardPage() {
       setLoading(false);
       setIsRefreshing(false);
     }
-  }, [dashFrom, dashTo, filters.selectedSalesperson, salespersonId, hasLoadedOnce, selectedProductNames, selectedClientIds, selectedCustTypes]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [dashFrom, dashTo, filters.selectedSalesperson, salespersonId, hasLoadedOnce, selectedProductNames, selectedClientIds, selectedCustTypes, selectedBranches]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => { fetchData(); }, [fetchData]);
 
@@ -709,7 +747,7 @@ export default function DashboardPage() {
   const fetchRankings = useCallback(async () => {
     const supabase = createClient();
     const spFilter = salespersonId || filters.selectedSalesperson;
-    const rankCacheKey = `dash_rank_v1:${dashFrom.year}-${dashFrom.month}:${dashTo.year}-${dashTo.month}:${spFilter || "all"}:${selectedProductNames.slice().sort().join("|")}:${selectedClientIds.slice().sort().join("|")}:${selectedCustTypes.slice().sort().join("|")}`;
+    const rankCacheKey = `dash_rank_v2:${dashFrom.year}-${dashFrom.month}:${dashTo.year}-${dashTo.month}:${spFilter || "all"}:${selectedBranches.length > 0 ? selectedBranches.slice().sort().join("|") : "all-branches"}:${selectedProductNames.slice().sort().join("|")}:${selectedClientIds.slice().sort().join("|")}:${selectedCustTypes.slice().sort().join("|")}`;
 
     const cachedRanks = dataCache.get<{
       leaderboard: { id: string; name: string; code: string; meters: number; clients: number; revenue: number }[];
@@ -745,6 +783,7 @@ export default function DashboardPage() {
         let qq = q.gte("year", dashFrom.year).lte("year", dashTo.year);
         if (dashFrom.year === dashTo.year) qq = qq.gte("month", dashFrom.month).lte("month", dashTo.month);
         if (spFilter) qq = qq.eq("salesperson_id", spFilter);
+        if (selectedBranches.length > 0) qq = qq.in("order_import_branch", selectedBranches);
         qq = qq.in("customer_type", custTypesForFilter);
         if (selectedProductNames.length > 0) qq = qq.in("top_product_name", selectedProductNames);
         if (selectedClientIds.length > 0) qq = qq.in("client_id", selectedClientIds);
@@ -808,6 +847,7 @@ export default function DashboardPage() {
         !Boolean((currentUser as { is_super_admin?: boolean | null } | null)?.is_super_admin ?? false);
       const useCmmForProducts =
         isScopedAdmin ||
+        selectedBranches.length > 0 ||
         selectedCustTypes.length > 0 ||
         selectedProductNames.length > 0 ||
         selectedClientIds.length > 0;
@@ -919,7 +959,7 @@ export default function DashboardPage() {
     } finally {
       setRankLoading(false);
     }
-  }, [dashFrom, dashTo, filters.selectedSalesperson, salespersonId, selectedProductNames, selectedClientIds, selectedCustTypes]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [dashFrom, dashTo, filters.selectedSalesperson, salespersonId, selectedProductNames, selectedClientIds, selectedCustTypes, selectedBranches]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => { fetchRankings(); }, [fetchRankings]);
 
@@ -971,6 +1011,14 @@ export default function DashboardPage() {
         : isRTL
           ? `${selectedCustTypes.length} أنواع`
           : `${selectedCustTypes.length} types`;
+  const branchFilterSummary =
+    selectedBranches.length === 0
+      ? isRTL ? "كل الفروع" : "All Branches"
+      : selectedBranches.length === 1
+        ? selectedBranches[0]
+        : isRTL
+          ? `${selectedBranches.length} فروع`
+          : `${selectedBranches.length} branches`;
 
   // Level counts now come directly from the RPC stats function
   const greenClients  = Array(greenCount).fill({ level: "GREEN",  client_id: "g", client_name: "" });
@@ -1234,6 +1282,52 @@ export default function DashboardPage() {
             </Popover>
           )}
 
+          {/* Branches — multiselect */}
+          <Popover open={branchOpen} onOpenChange={setBranchOpen}>
+            <PopoverTrigger asChild>
+              <Button variant="outline" role="combobox" aria-expanded={branchOpen}
+                className="w-28 md:w-44 h-7 md:h-8 text-[10px] md:text-xs justify-between font-normal shrink-0 px-2">
+                <span className="truncate">{branchFilterSummary}</span>
+                <ChevronsUpDown className="h-3.5 w-3.5 shrink-0 opacity-50 ml-1" />
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent className="w-64 p-0" align="start">
+              <Command>
+                <CommandInput placeholder={isRTL ? "ابحث عن فرع..." : "Search branch..."} className="text-xs h-8" />
+                <CommandList>
+                  <CommandEmpty className="text-xs py-3 text-center text-muted-foreground">
+                    {isRTL ? "لا توجد نتائج" : "No results"}
+                  </CommandEmpty>
+                  <CommandGroup>
+                    <CommandItem
+                      value="__all_branches__"
+                      onSelect={() => { setSelectedBranches([]); }}
+                      className="text-xs"
+                    >
+                      <Check className={`h-3.5 w-3.5 mr-2 ${selectedBranches.length === 0 ? "opacity-100" : "opacity-0"}`} />
+                      {isRTL ? "كل الفروع" : "All Branches"}
+                    </CommandItem>
+                    {branches.map((b) => (
+                      <CommandItem
+                        key={b}
+                        value={b}
+                        onSelect={() => {
+                          setSelectedBranches((prev) =>
+                            prev.includes(b) ? prev.filter((x) => x !== b) : [...prev, b]
+                          );
+                        }}
+                        className="text-xs"
+                      >
+                        <Check className={`h-3.5 w-3.5 mr-2 shrink-0 ${selectedBranches.includes(b) ? "opacity-100" : "opacity-0"}`} />
+                        <span className="truncate">{b}</span>
+                      </CommandItem>
+                    ))}
+                  </CommandGroup>
+                </CommandList>
+              </Command>
+            </PopoverContent>
+          </Popover>
+
           <div className="w-px h-4 md:h-5 bg-border mx-0.5 md:mx-1" />
 
           {/* Clients — multiselect */}
@@ -1373,12 +1467,13 @@ export default function DashboardPage() {
           {/* Active filters badge + clear */}
           {(dashFrom.year !== _defYear || dashFrom.month !== _defMonth ||
             dashTo.year  !== _defYear || dashTo.month  !== _defMonth ||
-            filters.selectedSalesperson || selectedProductNames.length > 0 || selectedClientIds.length > 0 || selectedCustTypes.length > 0) && (
+            filters.selectedSalesperson || selectedBranches.length > 0 || selectedProductNames.length > 0 || selectedClientIds.length > 0 || selectedCustTypes.length > 0) && (
             <Button variant="ghost" size="sm" className="h-7 px-2 text-xs gap-1 text-muted-foreground hover:text-destructive shrink-0"
               onClick={() => {
                 setDashFrom({ month: _defMonth, year: _defYear });
                 setDashTo({ month: _defMonth, year: _defYear });
                 setFilter("selectedSalesperson", null);
+                setSelectedBranches([]);
                 setSelectedProductNames([]);
                 setSelectedClientIds([]);
                 setSelectedCustTypes([]);

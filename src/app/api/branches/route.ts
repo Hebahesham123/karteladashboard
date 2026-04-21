@@ -80,6 +80,19 @@ export async function GET() {
     from += PAGE;
   }
 
+  // Ensure scoped admins always see their full assigned branch list,
+  // even when a branch has zero orders in the current dataset.
+  if (!adminScope.isSuperAdmin && hasBranchScope) {
+    for (const b of branchScope.branches ?? []) {
+      const clean = String(b ?? "").trim();
+      if (!clean) continue;
+      const key = clean;
+      if (!counts.has(key)) {
+        counts.set(key, { n: 0, rev: 0 });
+      }
+    }
+  }
+
   const branches = Array.from(counts.entries())
     .map(([key, v]) => ({
       branch: key === "__none__" ? null : key,
