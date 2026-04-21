@@ -1241,47 +1241,6 @@ export default function DashboardPage() {
 
           <div className="w-px h-4 md:h-5 bg-border mx-0.5 md:mx-1" />
 
-          {/* Salesperson */}
-          {salespersons.length > 0 && (
-            <Popover open={spOpen} onOpenChange={setSpOpen}>
-              <PopoverTrigger asChild>
-                <Button variant="outline" role="combobox" aria-expanded={spOpen}
-                  className="w-32 md:w-44 h-7 md:h-8 text-[10px] md:text-xs justify-between font-normal shrink-0 px-2">
-                  <span className="truncate">
-                    {filters.selectedSalesperson
-                      ? salespersons.find((s) => s.id === filters.selectedSalesperson)?.name
-                      : isRTL ? "كل المندوبين" : "All Salespersons"}
-                  </span>
-                  <ChevronsUpDown className="h-3.5 w-3.5 shrink-0 opacity-50 ml-1" />
-                </Button>
-              </PopoverTrigger>
-              <PopoverContent className="w-64 p-0" align="start">
-                <Command>
-                  <CommandInput placeholder={isRTL ? "ابحث عن مندوب..." : "Search..."} className="text-xs h-8" />
-                  <CommandList>
-                    <CommandEmpty className="text-xs py-3 text-center text-muted-foreground">
-                      {isRTL ? "لا توجد نتائج" : "No results"}
-                    </CommandEmpty>
-                    <CommandGroup>
-                      <CommandItem value="all" onSelect={() => { setFilter("selectedSalesperson", null); setSpOpen(false); }} className="text-xs">
-                        <Check className={`h-3.5 w-3.5 mr-2 ${!filters.selectedSalesperson ? "opacity-100" : "opacity-0"}`} />
-                        {isRTL ? "كل المندوبين" : "All Salespersons"}
-                      </CommandItem>
-                      {salespersons.map((sp) => (
-                        <CommandItem key={sp.id} value={sp.name}
-                          onSelect={() => { setFilter("selectedSalesperson", filters.selectedSalesperson === sp.id ? null : sp.id); setSpOpen(false); }}
-                          className="text-xs">
-                          <Check className={`h-3.5 w-3.5 mr-2 shrink-0 ${filters.selectedSalesperson === sp.id ? "opacity-100" : "opacity-0"}`} />
-                          <span className="truncate">{sp.name}</span>
-                        </CommandItem>
-                      ))}
-                    </CommandGroup>
-                  </CommandList>
-                </Command>
-              </PopoverContent>
-            </Popover>
-          )}
-
           {/* Branches — multiselect */}
           <Popover open={branchOpen} onOpenChange={setBranchOpen}>
             <PopoverTrigger asChild>
@@ -1327,6 +1286,47 @@ export default function DashboardPage() {
               </Command>
             </PopoverContent>
           </Popover>
+
+          {/* Salesperson */}
+          {salespersons.length > 0 && (
+            <Popover open={spOpen} onOpenChange={setSpOpen}>
+              <PopoverTrigger asChild>
+                <Button variant="outline" role="combobox" aria-expanded={spOpen}
+                  className="w-32 md:w-44 h-7 md:h-8 text-[10px] md:text-xs justify-between font-normal shrink-0 px-2">
+                  <span className="truncate">
+                    {filters.selectedSalesperson
+                      ? salespersons.find((s) => s.id === filters.selectedSalesperson)?.name
+                      : isRTL ? "كل المندوبين" : "All Salespersons"}
+                  </span>
+                  <ChevronsUpDown className="h-3.5 w-3.5 shrink-0 opacity-50 ml-1" />
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent className="w-64 p-0" align="start">
+                <Command>
+                  <CommandInput placeholder={isRTL ? "ابحث عن مندوب..." : "Search..."} className="text-xs h-8" />
+                  <CommandList>
+                    <CommandEmpty className="text-xs py-3 text-center text-muted-foreground">
+                      {isRTL ? "لا توجد نتائج" : "No results"}
+                    </CommandEmpty>
+                    <CommandGroup>
+                      <CommandItem value="all" onSelect={() => { setFilter("selectedSalesperson", null); setSpOpen(false); }} className="text-xs">
+                        <Check className={`h-3.5 w-3.5 mr-2 ${!filters.selectedSalesperson ? "opacity-100" : "opacity-0"}`} />
+                        {isRTL ? "كل المندوبين" : "All Salespersons"}
+                      </CommandItem>
+                      {salespersons.map((sp) => (
+                        <CommandItem key={sp.id} value={sp.name}
+                          onSelect={() => { setFilter("selectedSalesperson", filters.selectedSalesperson === sp.id ? null : sp.id); setSpOpen(false); }}
+                          className="text-xs">
+                          <Check className={`h-3.5 w-3.5 mr-2 shrink-0 ${filters.selectedSalesperson === sp.id ? "opacity-100" : "opacity-0"}`} />
+                          <span className="truncate">{sp.name}</span>
+                        </CommandItem>
+                      ))}
+                    </CommandGroup>
+                  </CommandList>
+                </Command>
+              </PopoverContent>
+            </Popover>
+          )}
 
           <div className="w-px h-4 md:h-5 bg-border mx-0.5 md:mx-1" />
 
