@@ -803,8 +803,14 @@ export default function DashboardPage() {
       });
 
       // ── 2. Product ranking ─────────────────────────────────────────────────
+      const isScopedAdmin =
+        currentUser?.role === "admin" &&
+        !Boolean((currentUser as { is_super_admin?: boolean | null } | null)?.is_super_admin ?? false);
       const useCmmForProducts =
-        selectedCustTypes.length > 0 || selectedProductNames.length > 0 || selectedClientIds.length > 0;
+        isScopedAdmin ||
+        selectedCustTypes.length > 0 ||
+        selectedProductNames.length > 0 ||
+        selectedClientIds.length > 0;
       let productRanking: { name: string; qty: number; revenue: number; clients: number }[] = [];
 
       if (useCmmForProducts) {
