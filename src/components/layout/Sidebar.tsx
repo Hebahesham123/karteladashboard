@@ -44,6 +44,7 @@ const navItems: NavItem[] = [
   { labelEn: "Clients", labelAr: "العملاء", href: "/clients", icon: Users, role: "admin" },
   { labelEn: "Urgent Orders", labelAr: "الطلبات العاجلة", href: "/urgent-orders", icon: Siren, role: "admin" },
   { labelEn: "Admin", labelAr: "الإدارة", href: "/admin", icon: Settings, role: "admin" },
+  { labelEn: "Settings", labelAr: "الإعدادات", href: "/settings", icon: Settings, role: "all" },
 ];
 
 interface SidebarProps {

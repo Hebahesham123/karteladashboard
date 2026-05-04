@@ -244,7 +244,7 @@ export default function AnalyticsPage() {
     } finally {
       setLoading(false);
     }
-  }, [filters.selectedMonth, filters.selectedYear, filters.selectedSalesperson, salespersonId, months]);
+  }, [filters.selectedMonth, filters.selectedYear, filters.selectedSalesperson, salespersonId, months, locale]);
 
   useEffect(() => { fetchAll(); }, [fetchAll]);
 

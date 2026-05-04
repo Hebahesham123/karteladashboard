@@ -747,7 +747,7 @@ export default function DashboardPage() {
   const fetchRankings = useCallback(async () => {
     const supabase = createClient();
     const spFilter = salespersonId || filters.selectedSalesperson;
-    const rankCacheKey = `dash_rank_v2:${dashFrom.year}-${dashFrom.month}:${dashTo.year}-${dashTo.month}:${spFilter || "all"}:${selectedBranches.length > 0 ? selectedBranches.slice().sort().join("|") : "all-branches"}:${selectedProductNames.slice().sort().join("|")}:${selectedClientIds.slice().sort().join("|")}:${selectedCustTypes.slice().sort().join("|")}`;
+    const rankCacheKey = `dash_rank_v3:${dashFrom.year}-${dashFrom.month}:${dashTo.year}-${dashTo.month}:${spFilter || "all"}:${selectedBranches.length > 0 ? selectedBranches.slice().sort().join("|") : "all-branches"}:${selectedProductNames.slice().sort().join("|")}:${selectedClientIds.slice().sort().join("|")}:${selectedCustTypes.slice().sort().join("|")}`;
 
     const cachedRanks = dataCache.get<{
       leaderboard: { id: string; name: string; code: string; meters: number; clients: number; revenue: number }[];
@@ -845,12 +845,10 @@ export default function DashboardPage() {
       const isScopedAdmin =
         currentUser?.role === "admin" &&
         !Boolean((currentUser as { is_super_admin?: boolean | null } | null)?.is_super_admin ?? false);
-      const useCmmForProducts =
-        isScopedAdmin ||
-        selectedBranches.length > 0 ||
-        selectedCustTypes.length > 0 ||
-        selectedProductNames.length > 0 ||
-        selectedClientIds.length > 0;
+      // Always use CMM for products: product_analytics view can be empty / out of sync,
+      // and CMM gives correct unique-client counts via Set aggregation.
+      const useCmmForProducts = true;
+      void isScopedAdmin;
       let productRanking: { name: string; qty: number; revenue: number; clients: number }[] = [];
 
       if (useCmmForProducts) {
@@ -893,7 +891,8 @@ export default function DashboardPage() {
             q = q.gte("month", dashFrom.month).lte("month", dashTo.month);
           }
           if (spFilter) q = q.eq("salesperson_id", spFilter);
-          else q = q.is("salesperson_id", null);
+          // No salesperson filter → sum across all salesperson rows (do NOT filter by null,
+          // product_analytics aggregates per-salesperson and has no global null rows).
           return q;
         });
         const prodAgg = new Map<string, { qty: number; revenue: number; clients: number }>();

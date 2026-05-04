@@ -866,7 +866,7 @@ export default function ComparisonPage() {
     const total = ((data ?? []) as any[]).reduce((sum, row) => sum + (Number((row as any).total_revenue) || 0), 0);
     return new Map<string, number>([[isRTL ? "صافي الربح" : "Net Profit", total]]);
   },
-    [currentUser?.role, isRTL, salespersonId]
+    [currentUser?.role, currentUser, isRTL, salespersonId]
   );
 
   const runComparison = useCallback(async () => {
@@ -965,7 +965,7 @@ export default function ComparisonPage() {
     } finally {
       setLoading(false);
     }
-  }, [currentUser, monthCount, period1, period2, period3, mode, typeKind, typeValue, loadPeriodMap]);
+  }, [currentUser, monthCount, period1, period2, period3, mode, typeKind, typeValue, loadPeriodMap, locale, salespersonId]);
 
   useEffect(() => {
     if (!currentUser) return;
