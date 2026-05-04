@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import {
   Check,
   ChevronsUpDown,
+  Download,
   Layers,
   Loader2,
   MapPin,
@@ -47,6 +48,7 @@ interface MatchRow {
 }
 
 const CAT_PLACEHOLDER = "__pick_category__";
+const CAT_ANY = "__any_category__";
 const PL_ANY = "__any_pricelist__";
 const DEFAULT_PRICE_RANGE = 50;
 
@@ -241,7 +243,7 @@ export default function ClientsByCategoryPricePage() {
       setError(isRTL ? "اختر التصنيف" : "Select a category");
       return;
     }
-    const catNorm = selectedCategory.trim().toLowerCase();
+    const catNorm = selectedCategory === CAT_ANY ? "" : selectedCategory.trim().toLowerCase();
     const plNorm = selectedPricelist === PL_ANY ? "" : selectedPricelist.trim().toLowerCase();
 
     const priceTrim = priceInput.trim();
@@ -373,7 +375,7 @@ export default function ClientsByCategoryPricePage() {
         if (qty <= 0) continue;
         const inv = Number(row.invoice_total) || 0;
         const oc = String(row.category ?? "").trim().toLowerCase();
-        if (oc !== catNorm) continue;
+        if (catNorm && oc !== catNorm) continue;
         if (plNorm) {
           const op = String(row.pricelist ?? "").trim().toLowerCase();
           if (op !== plNorm) continue;
@@ -452,6 +454,65 @@ export default function ClientsByCategoryPricePage() {
       router.push("/dashboard");
     }
   }, [currentUser, router]);
+
+  const handleExport = useCallback(async () => {
+    if (matches.length === 0) return;
+    const { utils, writeFile } = await import("xlsx");
+    const headers = isRTL
+      ? {
+          partner: "الرقم",
+          client: "العميل",
+          branch: "الفرع",
+          dayDate: "تاريخ اليوم",
+          invoice: "فاتوره",
+          product: "المنتج",
+          category: "التصنيف",
+          kartelaQty: "كمية كارتيلا",
+          meters: "الأمتار",
+          total: "الإجمالي",
+          unit: "سعر المتر",
+          pricelist: "قائمة الأسعار",
+          sp: "المندوب",
+        }
+      : {
+          partner: "Partner",
+          client: "Client",
+          branch: "Branch",
+          dayDate: "Day",
+          invoice: "Invoice",
+          product: "Product",
+          category: "Category",
+          kartelaQty: "Kartela qty",
+          meters: "Meters",
+          total: "Total",
+          unit: "EGP/m",
+          pricelist: "Pricelist",
+          sp: "Salesperson",
+        };
+    const rows = matches.map((r) => ({
+      [headers.partner]: r.partnerId,
+      [headers.client]: r.name,
+      [headers.branch]: r.branch ?? "",
+      [headers.dayDate]: r.lineDate,
+      [headers.invoice]: r.invoiceRef,
+      [headers.product]: r.productName,
+      [headers.category]: r.category ?? "",
+      [headers.kartelaQty]: r.kartelaQty,
+      [headers.meters]: Math.round(r.quantity * 100) / 100,
+      [headers.total]: Math.round(r.invoiceTotal),
+      [headers.unit]: Math.round(r.unitPrice * 100) / 100,
+      [headers.pricelist]: r.pricelist ?? "",
+      [headers.sp]: r.salespersonName ?? "",
+    }));
+    const ws = utils.json_to_sheet(rows);
+    const wb = utils.book_new();
+    utils.book_append_sheet(wb, ws, "Results");
+    const catPart =
+      selectedCategory === CAT_PLACEHOLDER || selectedCategory === CAT_ANY
+        ? "all"
+        : selectedCategory.replace(/[\\/:*?"<>|]+/g, "_").slice(0, 40);
+    writeFile(wb, `clients-by-category-price-${year}-${String(month).padStart(2, "0")}-${catPart}.xlsx`);
+  }, [matches, isRTL, selectedCategory, month, year]);
 
   const t = {
     title: isRTL ? "عملاء حسب التصنيف والسعر" : "Clients by category & price",
@@ -571,7 +632,11 @@ export default function ClientsByCategoryPricePage() {
                 <PopoverTrigger asChild>
                   <Button variant="outline" role="combobox" aria-expanded={categoryOpen} className="w-full justify-between font-normal">
                     <span className="truncate">
-                      {selectedCategory === CAT_PLACEHOLDER ? (isRTL ? "— اختر التصنيف —" : "— Select category —") : selectedCategory}
+                      {selectedCategory === CAT_PLACEHOLDER
+                        ? (isRTL ? "— اختر التصنيف —" : "— Select category —")
+                        : selectedCategory === CAT_ANY
+                          ? (isRTL ? "الكل" : "All")
+                          : selectedCategory}
                     </span>
                     <ChevronsUpDown className="ms-2 h-4 w-4 shrink-0 opacity-50" />
                   </Button>
@@ -592,7 +657,19 @@ export default function ClientsByCategoryPricePage() {
                           <Check className={cn("me-2 h-4 w-4", selectedCategory === CAT_PLACEHOLDER ? "opacity-100" : "opacity-0")} />
                           {isRTL ? "— اختر التصنيف —" : "— Select category —"}
                         </CommandItem>
-                        {categoryOptions.map((c) => (
+                        <CommandItem
+                          value="__any_category__"
+                          onSelect={() => {
+                            setSelectedCategory(CAT_ANY);
+                            setCategoryOpen(false);
+                          }}
+                        >
+                          <Check className={cn("me-2 h-4 w-4", selectedCategory === CAT_ANY ? "opacity-100" : "opacity-0")} />
+                          {isRTL ? "الكل (كل التصنيفات)" : "All (every category)"}
+                        </CommandItem>
+                        {categoryOptions
+                          .filter((c) => c.trim().toLowerCase() !== "all")
+                          .map((c) => (
                           <CommandItem
                             key={c}
                             value={c}
@@ -726,6 +803,16 @@ export default function ClientsByCategoryPricePage() {
               <span className="rounded-full bg-primary/10 px-2.5 py-0.5 text-xs font-semibold text-primary tabular-nums">
                 {matches.length}
               </span>
+              <Button
+                variant="outline"
+                size="sm"
+                className="ms-auto h-8 gap-2"
+                onClick={() => void handleExport()}
+                disabled={matches.length === 0}
+              >
+                <Download className="h-4 w-4" />
+                {isRTL ? "تصدير Excel" : "Export Excel"}
+              </Button>
             </div>
             <CardDescription className="text-xs sm:text-sm">{t.resultsHint}</CardDescription>
           </CardHeader>
