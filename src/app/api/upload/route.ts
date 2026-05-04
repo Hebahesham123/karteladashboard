@@ -289,6 +289,14 @@ export async function POST(req: NextRequest) {
     invalidateServerCache("urgent-");
     invalidateServerCache("order-distinct");
 
+    // Refresh materialized analytics views so dashboard sees the new data immediately.
+    // Failure is non-fatal — upload still succeeds.
+    try {
+      await db.rpc("refresh_analytics_materialized_views");
+    } catch (e) {
+      console.warn("Could not refresh analytics MVs:", e);
+    }
+
     return NextResponse.json({
       success: true,
       processed: insertedOrders,
