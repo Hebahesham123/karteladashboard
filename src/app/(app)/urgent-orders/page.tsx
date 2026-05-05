@@ -86,14 +86,23 @@ export default function UrgentOrdersPage() {
       }
       if (!active) return;
       if (cmmFailed) {
-        const { data: perfRows } = await supabase
-          .from("salesperson_performance")
-          .select("salesperson_id, active_clients, total_meters")
-          .eq("month", monthNum)
-          .eq("year", yearNum)
-          .not("salesperson_id", "is", null);
+        // Paginate so we don't get capped at 1000 rows when there are many salespeople.
+        const PERF_PAGE = 1000;
+        const perfRows: { salesperson_id: string | null; active_clients: number | null; total_meters: number | null }[] = [];
+        for (let pf = 0; ; pf += PERF_PAGE) {
+          const { data: pageRows } = await supabase
+            .from("salesperson_performance")
+            .select("salesperson_id, active_clients, total_meters")
+            .eq("month", monthNum)
+            .eq("year", yearNum)
+            .not("salesperson_id", "is", null)
+            .range(pf, pf + PERF_PAGE - 1);
+          if (!pageRows || pageRows.length === 0) break;
+          perfRows.push(...(pageRows as typeof perfRows));
+          if (pageRows.length < PERF_PAGE) break;
+        }
         if (!active) return;
-        (perfRows ?? []).forEach((r: { salesperson_id: string | null; active_clients: number | null; total_meters: number | null }) => {
+        perfRows.forEach((r) => {
           const sid = r.salesperson_id;
           if (!sid) return;
           loadMap[sid] = {

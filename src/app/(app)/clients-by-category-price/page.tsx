@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import {
   Check,
   ChevronsUpDown,
+  Download,
   Layers,
   Loader2,
   MapPin,
@@ -25,6 +26,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
 interface MatchRow {
   clientId: string;
@@ -47,6 +49,7 @@ interface MatchRow {
 }
 
 const CAT_PLACEHOLDER = "__pick_category__";
+const CAT_ANY = "__any_category__";
 const PL_ANY = "__any_pricelist__";
 const DEFAULT_PRICE_RANGE = 50;
 
@@ -111,6 +114,17 @@ export default function ClientsByCategoryPricePage() {
 
   const month = filters.selectedMonth;
   const year = filters.selectedYear;
+
+  // Date range "to" — defaults to the same as "from" (single month).
+  const [monthTo, setMonthTo] = useState<number | null>(null);
+  const [yearTo, setYearTo] = useState<number | null>(null);
+  const effMonthTo = monthTo ?? month;
+  const effYearTo = yearTo ?? year;
+  const fromVal = (year ?? 0) * 12 + (month ?? 0);
+  const toValRaw = (effYearTo ?? 0) * 12 + (effMonthTo ?? 0);
+  const isRange = fromVal !== toValRaw;
+  const rangeFromVal = Math.min(fromVal, toValRaw);
+  const rangeToVal = Math.max(fromVal, toValRaw);
 
   const selectedSpIds = useMemo(() => {
     const selectedSalespersons = filters.selectedSalespersons ?? [];
@@ -241,7 +255,7 @@ export default function ClientsByCategoryPricePage() {
       setError(isRTL ? "اختر التصنيف" : "Select a category");
       return;
     }
-    const catNorm = selectedCategory.trim().toLowerCase();
+    const catNorm = selectedCategory === CAT_ANY ? "" : selectedCategory.trim().toLowerCase();
     const plNorm = selectedPricelist === PL_ANY ? "" : selectedPricelist.trim().toLowerCase();
 
     const priceTrim = priceInput.trim();
@@ -268,16 +282,23 @@ export default function ClientsByCategoryPricePage() {
     const supabase = createClient();
 
     try {
-      let clientQuery = supabase
-        .from("clients")
-        .select("id, name, partner_id, salesperson_id")
-        .in("customer_type", [...ALLOWED_CUSTOMER_TYPES]);
-
-      if (selectedSpIds.length === 1) clientQuery = clientQuery.eq("salesperson_id", selectedSpIds[0]);
-      else if (selectedSpIds.length > 1) clientQuery = clientQuery.in("salesperson_id", selectedSpIds);
-
-      const { data: clientRows, error: clientErr } = await clientQuery;
-      if (clientErr) throw new Error(clientErr.message);
+      // Fetch ALL clients in pages — PostgREST caps each request at 1000 rows.
+      const PAGE = 1000;
+      const clientRows: { id: string; name: string; partner_id: string; salesperson_id: string | null }[] = [];
+      for (let from = 0; ; from += PAGE) {
+        let clientQuery = supabase
+          .from("clients")
+          .select("id, name, partner_id, salesperson_id")
+          .in("customer_type", [...ALLOWED_CUSTOMER_TYPES])
+          .range(from, from + PAGE - 1);
+        if (selectedSpIds.length === 1) clientQuery = clientQuery.eq("salesperson_id", selectedSpIds[0]);
+        else if (selectedSpIds.length > 1) clientQuery = clientQuery.in("salesperson_id", selectedSpIds);
+        const { data: pageRows, error: clientErr } = await clientQuery;
+        if (clientErr) throw new Error(clientErr.message);
+        if (!pageRows || pageRows.length === 0) break;
+        clientRows.push(...(pageRows as typeof clientRows));
+        if (pageRows.length < PAGE) break;
+      }
 
       const { data: spRows } = await supabase.from("salespersons").select("id, name");
       const spNameById = new Map<string, string>(
@@ -323,17 +344,28 @@ export default function ClientsByCategoryPricePage() {
       }
 
       const fetchChunk = async (chunk: string[]) => {
-        const q = supabase
+        const fromY = Math.floor(rangeFromVal / 12);
+        const toY = Math.floor(rangeToVal / 12);
+        let q = supabase
           .from("orders")
           .select(
-            "client_id, quantity, invoice_total, category, invoice_ref, pricelist, salesperson_id, branch, invoice_date, created_at, meter_breakdown, products(name)"
+            "client_id, quantity, invoice_total, category, invoice_ref, pricelist, salesperson_id, branch, invoice_date, created_at, meter_breakdown, month, year, products(name)"
           )
-          .eq("month", month)
-          .eq("year", year)
           .in("client_id", chunk);
+        if (!isRange) {
+          q = q.eq("month", month as number).eq("year", year as number);
+        } else {
+          q = q.gte("year", fromY).lte("year", toY);
+        }
         const { data, error: oe } = await q;
         if (oe) throw new Error(oe.message);
-        return data ?? [];
+        const filtered = isRange
+          ? (data ?? []).filter((r: any) => {
+              const v = (Number(r.year) || 0) * 12 + (Number(r.month) || 0);
+              return v >= rangeFromVal && v <= rangeToVal;
+            })
+          : (data ?? []);
+        return filtered;
       };
 
       for (let i = 0; i < chunks.length; i += CONCURRENCY) {
@@ -373,7 +405,7 @@ export default function ClientsByCategoryPricePage() {
         if (qty <= 0) continue;
         const inv = Number(row.invoice_total) || 0;
         const oc = String(row.category ?? "").trim().toLowerCase();
-        if (oc !== catNorm) continue;
+        if (catNorm && oc !== catNorm) continue;
         if (plNorm) {
           const op = String(row.pricelist ?? "").trim().toLowerCase();
           if (op !== plNorm) continue;
@@ -452,6 +484,65 @@ export default function ClientsByCategoryPricePage() {
       router.push("/dashboard");
     }
   }, [currentUser, router]);
+
+  const handleExport = useCallback(async () => {
+    if (matches.length === 0) return;
+    const { utils, writeFile } = await import("xlsx");
+    const headers = isRTL
+      ? {
+          partner: "الرقم",
+          client: "العميل",
+          branch: "الفرع",
+          dayDate: "تاريخ اليوم",
+          invoice: "فاتوره",
+          product: "المنتج",
+          category: "التصنيف",
+          kartelaQty: "كمية كارتيلا",
+          meters: "الأمتار",
+          total: "الإجمالي",
+          unit: "سعر المتر",
+          pricelist: "قائمة الأسعار",
+          sp: "المندوب",
+        }
+      : {
+          partner: "Partner",
+          client: "Client",
+          branch: "Branch",
+          dayDate: "Day",
+          invoice: "Invoice",
+          product: "Product",
+          category: "Category",
+          kartelaQty: "Kartela qty",
+          meters: "Meters",
+          total: "Total",
+          unit: "EGP/m",
+          pricelist: "Pricelist",
+          sp: "Salesperson",
+        };
+    const rows = matches.map((r) => ({
+      [headers.partner]: r.partnerId,
+      [headers.client]: r.name,
+      [headers.branch]: r.branch ?? "",
+      [headers.dayDate]: r.lineDate,
+      [headers.invoice]: r.invoiceRef,
+      [headers.product]: r.productName,
+      [headers.category]: r.category ?? "",
+      [headers.kartelaQty]: r.kartelaQty,
+      [headers.meters]: Math.round(r.quantity * 100) / 100,
+      [headers.total]: Math.round(r.invoiceTotal),
+      [headers.unit]: Math.round(r.unitPrice * 100) / 100,
+      [headers.pricelist]: r.pricelist ?? "",
+      [headers.sp]: r.salespersonName ?? "",
+    }));
+    const ws = utils.json_to_sheet(rows);
+    const wb = utils.book_new();
+    utils.book_append_sheet(wb, ws, "Results");
+    const catPart =
+      selectedCategory === CAT_PLACEHOLDER || selectedCategory === CAT_ANY
+        ? "all"
+        : selectedCategory.replace(/[\\/:*?"<>|]+/g, "_").slice(0, 40);
+    writeFile(wb, `clients-by-category-price-${year}-${String(month).padStart(2, "0")}-${catPart}.xlsx`);
+  }, [matches, isRTL, selectedCategory, month, year]);
 
   const t = {
     title: isRTL ? "عملاء حسب التصنيف والسعر" : "Clients by category & price",
@@ -549,6 +640,52 @@ export default function ClientsByCategoryPricePage() {
         multiSelectDropdowns
       />
 
+      {/* Date-range "To" selector (FilterBar above provides the "From" month/year) */}
+      <div className="flex flex-wrap items-center gap-2 rounded-lg border border-border/60 bg-muted/20 px-3 py-2">
+        <span className="text-xs font-medium text-muted-foreground">
+          {isRTL ? "إلى:" : "To:"}
+        </span>
+        <Select
+          value={String(effMonthTo ?? "")}
+          onValueChange={(v) => setMonthTo(parseInt(v))}
+        >
+          <SelectTrigger className="h-9 w-[110px]">
+            <SelectValue placeholder={isRTL ? "الشهر" : "Month"} />
+          </SelectTrigger>
+          <SelectContent>
+            {(isRTL
+              ? ["يناير","فبراير","مارس","أبريل","مايو","يونيو","يوليو","أغسطس","سبتمبر","أكتوبر","نوفمبر","ديسمبر"]
+              : ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
+            ).map((label, idx) => (
+              <SelectItem key={idx + 1} value={String(idx + 1)}>{label}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Select
+          value={String(effYearTo ?? "")}
+          onValueChange={(v) => setYearTo(parseInt(v))}
+        >
+          <SelectTrigger className="h-9 w-[100px]">
+            <SelectValue placeholder={isRTL ? "السنة" : "Year"} />
+          </SelectTrigger>
+          <SelectContent>
+            {Array.from({ length: 6 }, (_, i) => new Date().getFullYear() - 3 + i).map((y) => (
+              <SelectItem key={y} value={String(y)}>{y}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        {isRange && (
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-8 text-xs"
+            onClick={() => { setMonthTo(null); setYearTo(null); }}
+          >
+            {isRTL ? "شهر واحد" : "Single month"}
+          </Button>
+        )}
+      </div>
+
       <Card className="overflow-hidden border-border/80 shadow-md">
         <CardHeader className="space-y-1 border-b border-border/60 bg-gradient-to-b from-muted/40 to-transparent px-4 py-4 sm:px-6">
           <div className="flex items-center gap-2">
@@ -571,7 +708,11 @@ export default function ClientsByCategoryPricePage() {
                 <PopoverTrigger asChild>
                   <Button variant="outline" role="combobox" aria-expanded={categoryOpen} className="w-full justify-between font-normal">
                     <span className="truncate">
-                      {selectedCategory === CAT_PLACEHOLDER ? (isRTL ? "— اختر التصنيف —" : "— Select category —") : selectedCategory}
+                      {selectedCategory === CAT_PLACEHOLDER
+                        ? (isRTL ? "— اختر التصنيف —" : "— Select category —")
+                        : selectedCategory === CAT_ANY
+                          ? (isRTL ? "الكل" : "All")
+                          : selectedCategory}
                     </span>
                     <ChevronsUpDown className="ms-2 h-4 w-4 shrink-0 opacity-50" />
                   </Button>
@@ -592,7 +733,19 @@ export default function ClientsByCategoryPricePage() {
                           <Check className={cn("me-2 h-4 w-4", selectedCategory === CAT_PLACEHOLDER ? "opacity-100" : "opacity-0")} />
                           {isRTL ? "— اختر التصنيف —" : "— Select category —"}
                         </CommandItem>
-                        {categoryOptions.map((c) => (
+                        <CommandItem
+                          value="__any_category__"
+                          onSelect={() => {
+                            setSelectedCategory(CAT_ANY);
+                            setCategoryOpen(false);
+                          }}
+                        >
+                          <Check className={cn("me-2 h-4 w-4", selectedCategory === CAT_ANY ? "opacity-100" : "opacity-0")} />
+                          {isRTL ? "الكل (كل التصنيفات)" : "All (every category)"}
+                        </CommandItem>
+                        {categoryOptions
+                          .filter((c) => c.trim().toLowerCase() !== "all")
+                          .map((c) => (
                           <CommandItem
                             key={c}
                             value={c}
@@ -726,6 +879,16 @@ export default function ClientsByCategoryPricePage() {
               <span className="rounded-full bg-primary/10 px-2.5 py-0.5 text-xs font-semibold text-primary tabular-nums">
                 {matches.length}
               </span>
+              <Button
+                variant="outline"
+                size="sm"
+                className="ms-auto h-8 gap-2"
+                onClick={() => void handleExport()}
+                disabled={matches.length === 0}
+              >
+                <Download className="h-4 w-4" />
+                {isRTL ? "تصدير Excel" : "Export Excel"}
+              </Button>
             </div>
             <CardDescription className="text-xs sm:text-sm">{t.resultsHint}</CardDescription>
           </CardHeader>

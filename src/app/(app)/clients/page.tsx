@@ -217,15 +217,25 @@ export default function ClientsPage() {
         if (spFilter) q = q.eq("salesperson_id", spFilter);
         return q;
       };
-      const inactiveClientsQ = (() => {
-        if (!wantInactive) return Promise.resolve({ data: [] as any[], error: null });
-        let q = supabase
-          .from("clients")
-          .select("id, partner_id, name, salesperson_id, current_status, customer_type")
-          .in("customer_type", [...ALLOWED_CUSTOMER_TYPES])
-          .range(0, 9999);
-        if (spFilter) q = q.eq("salesperson_id", spFilter);
-        return q;
+      const inactiveClientsQ = (async () => {
+        if (!wantInactive) return { data: [] as any[], error: null };
+        // Paginate fully — no hard 9999 cap.
+        const PAGE = 1000;
+        const all: any[] = [];
+        for (let from = 0; ; from += PAGE) {
+          let q = supabase
+            .from("clients")
+            .select("id, partner_id, name, salesperson_id, current_status, customer_type")
+            .in("customer_type", [...ALLOWED_CUSTOMER_TYPES])
+            .range(from, from + PAGE - 1);
+          if (spFilter) q = q.eq("salesperson_id", spFilter);
+          const { data, error } = await q;
+          if (error) return { data: all, error };
+          if (!data || data.length === 0) break;
+          all.push(...data);
+          if (data.length < PAGE) break;
+        }
+        return { data: all, error: null };
       })();
 
       const fetchViewPage = async (offset: number, limit: number, retries = 1): Promise<any[]> => {

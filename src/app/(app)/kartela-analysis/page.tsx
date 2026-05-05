@@ -25,6 +25,7 @@ import { PageBack } from "@/components/layout/PageBack";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
 interface MeterBreakdownLine {
   label: string;
@@ -213,6 +214,18 @@ export default function KartelaAnalysisPage() {
 
   const month = filters.selectedMonth;
   const year = filters.selectedYear;
+
+  // Date range "to" — defaults to the same as "from" (single month).
+  const [monthTo, setMonthTo] = useState<number | null>(null);
+  const [yearTo, setYearTo] = useState<number | null>(null);
+  const effMonthTo = monthTo ?? month;
+  const effYearTo = yearTo ?? year;
+  // Normalize so from <= to (swap if user picks an earlier "to")
+  const fromVal = (year ?? 0) * 12 + (month ?? 0);
+  const toValRaw = (effYearTo ?? 0) * 12 + (effMonthTo ?? 0);
+  const isRange = fromVal !== toValRaw;
+  const rangeFromVal = Math.min(fromVal, toValRaw);
+  const rangeToVal = Math.max(fromVal, toValRaw);
   const selectedSpIds = useMemo(() => {
     const selectedSalespersons = filters.selectedSalespersons ?? [];
     if (currentUser?.role === "sales") return salespersonId ? [salespersonId] : [];
@@ -236,7 +249,7 @@ export default function KartelaAnalysisPage() {
     const selectedProductIds = filters.selectedProducts?.length
       ? filters.selectedProducts
       : (filters.selectedProduct ? [filters.selectedProduct] : []);
-    const cacheKey = `${KARTELA_CACHE_PREFIX}${month}:${year}:${selectedSpIds.slice().sort().join(",")}:${selectedClientIds.slice().sort().join(",")}:${selectedProductIds.slice().sort().join(",")}`;
+    const cacheKey = `${KARTELA_CACHE_PREFIX}${rangeFromVal}-${rangeToVal}:${selectedSpIds.slice().sort().join(",")}:${selectedClientIds.slice().sort().join(",")}:${selectedProductIds.slice().sort().join(",")}`;
 
     let hydratedFromCache = false;
     if (typeof window !== "undefined") {
@@ -329,23 +342,38 @@ export default function KartelaAnalysisPage() {
       for (let i = 0; i < scopedAllowedIds.length; i += CHUNK) {
         chunks.push(scopedAllowedIds.slice(i, i + CHUNK));
       }
+      const fromY = Math.floor(rangeFromVal / 12);
+      const fromM = rangeFromVal % 12 === 0 ? 12 : rangeFromVal % 12;
+      const toY = Math.floor(rangeToVal / 12);
+      const toM = rangeToVal % 12 === 0 ? 12 : rangeToVal % 12;
       for (let i = 0; i < chunks.length; i += PARALLEL_BATCH) {
         const batch = chunks.slice(i, i + PARALLEL_BATCH);
         const results = await Promise.all(
-          batch.map((chunk) =>
-            supabase
+          batch.map((chunk) => {
+            let q = supabase
               .from("orders")
               .select(
-                "client_id, quantity, invoice_total, salesperson_id, meter_breakdown, category, invoice_ref, branch, invoice_date, created_at, pricelist, products(name)"
+                "client_id, quantity, invoice_total, salesperson_id, meter_breakdown, category, invoice_ref, branch, invoice_date, created_at, pricelist, month, year, products(name)"
               )
-              .eq("month", month)
-              .eq("year", year)
-              .in("client_id", chunk)
-          )
+              .in("client_id", chunk);
+            if (!isRange) {
+              q = q.eq("month", month as number).eq("year", year as number);
+            } else {
+              // Widen by year then narrow precisely in JS for cross-year ranges.
+              q = q.gte("year", fromY).lte("year", toY);
+            }
+            return q;
+          })
         );
         results.forEach(({ data, error: oe }) => {
           if (oe) throw new Error(oe.message);
-          orderRows.push(...(data ?? []));
+          const filtered = isRange
+            ? (data ?? []).filter((r: any) => {
+                const v = (Number(r.year) || 0) * 12 + (Number(r.month) || 0);
+                return v >= rangeFromVal && v <= rangeToVal;
+              })
+            : (data ?? []);
+          orderRows.push(...filtered);
         });
       }
 
@@ -567,7 +595,9 @@ export default function KartelaAnalysisPage() {
       setIsRefreshing(false);
     }
   }, [
-    currentUser, salespersonId, selectedSpIds, month, year, isRTL,
+    currentUser, salespersonId, selectedSpIds, month, year, monthTo, yearTo, isRTL,
+    rangeFromVal, rangeToVal, isRange, filters.selectedClient, filters.selectedClients,
+    filters.selectedProduct, filters.selectedProducts,
     filters.selectedClient, filters.selectedClients, filters.selectedProduct, filters.selectedProducts,
   ]);
 
@@ -584,9 +614,14 @@ export default function KartelaAnalysisPage() {
   const monthLabel = useMemo(() => {
     const ar = ["يناير","فبراير","مارس","أبريل","مايو","يونيو","يوليو","أغسطس","سبتمبر","أكتوبر","نوفمبر","ديسمبر"];
     const en = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-    const m = (month ?? 1) - 1;
-    return `${isRTL ? ar[m] : en[m]} ${year}`;
-  }, [month, year, isRTL]);
+    const fy = Math.floor(rangeFromVal / 12);
+    const fm = rangeFromVal % 12 === 0 ? 12 : rangeFromVal % 12;
+    const ty = Math.floor(rangeToVal / 12);
+    const tm = rangeToVal % 12 === 0 ? 12 : rangeToVal % 12;
+    const fromStr = `${isRTL ? ar[fm - 1] : en[fm - 1]} ${fy}`;
+    const toStr   = `${isRTL ? ar[tm - 1] : en[tm - 1]} ${ty}`;
+    return isRange ? `${fromStr} → ${toStr}` : fromStr;
+  }, [rangeFromVal, rangeToVal, isRange, isRTL]);
 
   const t = {
     title: isRTL ? "تحليل وتتبع الكارتيلا" : "Kartela analysis & tracking",
@@ -722,6 +757,55 @@ export default function KartelaAnalysisPage() {
         showProduct
         multiSelectDropdowns
       />
+
+      {/* Date-range "To" selector (the FilterBar above provides the "From" month/year) */}
+      <div className="flex flex-wrap items-center gap-2 rounded-lg border border-border/60 bg-muted/20 px-3 py-2">
+        <span className="text-xs font-medium text-muted-foreground">
+          {isRTL ? "إلى:" : "To:"}
+        </span>
+        <Select
+          value={String(effMonthTo ?? "")}
+          onValueChange={(v) => setMonthTo(parseInt(v))}
+        >
+          <SelectTrigger className="h-9 w-[110px]">
+            <SelectValue placeholder={isRTL ? "الشهر" : "Month"} />
+          </SelectTrigger>
+          <SelectContent>
+            {(isRTL
+              ? ["يناير","فبراير","مارس","أبريل","مايو","يونيو","يوليو","أغسطس","سبتمبر","أكتوبر","نوفمبر","ديسمبر"]
+              : ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
+            ).map((label, idx) => (
+              <SelectItem key={idx + 1} value={String(idx + 1)}>{label}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Select
+          value={String(effYearTo ?? "")}
+          onValueChange={(v) => setYearTo(parseInt(v))}
+        >
+          <SelectTrigger className="h-9 w-[100px]">
+            <SelectValue placeholder={isRTL ? "السنة" : "Year"} />
+          </SelectTrigger>
+          <SelectContent>
+            {Array.from({ length: 6 }, (_, i) => new Date().getFullYear() - 3 + i).map((y) => (
+              <SelectItem key={y} value={String(y)}>{y}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        {isRange && (
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-8 text-xs"
+            onClick={() => { setMonthTo(null); setYearTo(null); }}
+          >
+            {isRTL ? "شهر واحد" : "Single month"}
+          </Button>
+        )}
+        <span className="text-xs text-muted-foreground ml-auto">
+          {monthLabel}
+        </span>
+      </div>
 
       {error && (
         <p className="text-sm text-destructive bg-destructive/10 border border-destructive/20 rounded-lg px-3 py-2">

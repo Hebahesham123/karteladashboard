@@ -100,38 +100,68 @@ export default function AnalyticsPage() {
 
     setLoading(true);
 
-    let prodQ  = supabase.from("product_analytics").select("*").order("total_meters", { ascending: false });
-    let salesQ = supabase.from("salesperson_performance").select("*").order("total_meters", { ascending: false }).limit(500);
-    let trendQ = supabase.from("client_monthly_metrics").select("month, year, total_meters, client_id, level");
-    let cmQ    = supabase.from("client_monthly_metrics").select("client_id, level, total_meters");
+    // Paginated fetch — PostgREST caps each request at 1000 rows.
+    const fetchAllPages = async (build: (from: number, to: number) => any) => {
+      const PAGE = 1000;
+      const all: any[] = [];
+      for (let from = 0; ; from += PAGE) {
+        const { data, error } = await build(from, from + PAGE - 1);
+        if (error) throw new Error(error.message);
+        if (!data || data.length === 0) break;
+        all.push(...data);
+        if (data.length < PAGE) break;
+      }
+      return all;
+    };
 
-    if (year) {
-      prodQ  = prodQ.eq("year",  year);
-      salesQ = salesQ.eq("year", year);
-      trendQ = trendQ.eq("year", year);
-      cmQ    = cmQ.eq("year",    year);
-    }
-    if (selectedMonth) {
-      prodQ  = prodQ.eq("month",  selectedMonth);
-      salesQ = salesQ.eq("month", selectedMonth);
-      cmQ    = cmQ.eq("month",    selectedMonth);
-    }
-    // Always filter salesperson_id on product_analytics: NULL = all-salespersons aggregate
-    if (spFilter) {
-      prodQ  = prodQ.eq("salesperson_id",  spFilter);
-      salesQ = salesQ.eq("salesperson_id", spFilter);
-      trendQ = trendQ.eq("salesperson_id", spFilter);
-      cmQ    = cmQ.eq("salesperson_id",    spFilter);
-    } else {
-      prodQ = prodQ.is("salesperson_id", null);
-    }
+    const buildProdQ = (from: number, to: number) => {
+      let q = supabase.from("product_analytics").select("*")
+        .order("total_meters", { ascending: false })
+        .range(from, to);
+      if (year) q = q.eq("year", year);
+      if (selectedMonth) q = q.eq("month", selectedMonth);
+      if (spFilter) q = q.eq("salesperson_id", spFilter);
+      else q = q.is("salesperson_id", null);
+      return q;
+    };
+    const buildSalesQ = (from: number, to: number) => {
+      let q = supabase.from("salesperson_performance").select("*")
+        .order("total_meters", { ascending: false })
+        .range(from, to);
+      if (year) q = q.eq("year", year);
+      if (selectedMonth) q = q.eq("month", selectedMonth);
+      if (spFilter) q = q.eq("salesperson_id", spFilter);
+      return q;
+    };
+    const buildTrendQ = (from: number, to: number) => {
+      let q = supabase.from("client_monthly_metrics")
+        .select("month, year, total_meters, client_id, level")
+        .range(from, to);
+      if (year) q = q.eq("year", year);
+      if (spFilter) q = q.eq("salesperson_id", spFilter);
+      return q;
+    };
+    const buildCmQ = (from: number, to: number) => {
+      let q = supabase.from("client_monthly_metrics")
+        .select("client_id, level, total_meters")
+        .range(from, to);
+      if (year) q = q.eq("year", year);
+      if (selectedMonth) q = q.eq("month", selectedMonth);
+      if (spFilter) q = q.eq("salesperson_id", spFilter);
+      return q;
+    };
 
     try {
-      const results = await Promise.allSettled([prodQ, salesQ, trendQ, cmQ]);
-      const prod  = results[0].status === "fulfilled" ? (results[0].value as any).data : null;
-      const sales = results[1].status === "fulfilled" ? (results[1].value as any).data : null;
-      const trend = results[2].status === "fulfilled" ? (results[2].value as any).data : null;
-      const cm    = results[3].status === "fulfilled" ? (results[3].value as any).data : null;
+      const results = await Promise.allSettled([
+        fetchAllPages(buildProdQ),
+        fetchAllPages(buildSalesQ),
+        fetchAllPages(buildTrendQ),
+        fetchAllPages(buildCmQ),
+      ]);
+      const prod  = results[0].status === "fulfilled" ? results[0].value : null;
+      const sales = results[1].status === "fulfilled" ? results[1].value : null;
+      const trend = results[2].status === "fulfilled" ? results[2].value : null;
+      const cm    = results[3].status === "fulfilled" ? results[3].value : null;
 
       // Aggregate products by name — sum meters, take max client count (not sum to avoid duplicate counting)
       const prodAgg = new Map<string, { name: string; meters: number; clients: number; orders: number }>();
