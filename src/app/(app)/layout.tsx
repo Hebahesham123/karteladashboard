@@ -28,50 +28,57 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
         return;
       }
 
-      // Fetch user profile
-      const { data: user } = await supabase
-        .from("users")
-        .select("*")
-        .eq("id", session.user.id)
-        .single();
+      const userId = session.user.id;
+      const SP_CACHE_KEY = `sp_link_v1:${userId}`;
+      const cachedSpId =
+        typeof window !== "undefined" ? window.localStorage.getItem(SP_CACHE_KEY) : null;
+
+      // Fetch user profile + salesperson record in parallel — saves one full round-trip.
+      const [userRes, spRes] = await Promise.all([
+        supabase.from("users").select("*").eq("id", userId).single(),
+        supabase.from("salespersons").select("id").eq("user_id", userId).maybeSingle(),
+      ]);
+      const user = userRes.data;
+      let sp = spRes.data;
 
       if (user) {
         setCurrentUser(user);
-        if (user.role === "admin") {
-          try {
-            const res = await fetch("/api/me/admin-area", { credentials: "include", cache: "no-store" });
-            const json = await res.json();
-            if (res.ok) {
-              setAdminAreaTitle((json?.label as string | null) ?? null);
-            } else {
-              setAdminAreaTitle(null);
-            }
-          } catch {
-            setAdminAreaTitle(null);
+        // Set salesperson immediately from cache so the page can boot without waiting on fix-my-link.
+        if (user.role === "sales" && (sp?.id || cachedSpId)) {
+          setSalespersonId(sp?.id || cachedSpId);
+          if (sp?.id && typeof window !== "undefined") {
+            window.localStorage.setItem(SP_CACHE_KEY, sp.id);
           }
+        }
+
+        if (user.role === "admin") {
+          // Don't block paint on this — it just sets a header label.
+          fetch("/api/me/admin-area", { credentials: "include", cache: "no-store" })
+            .then((res) => (res.ok ? res.json() : null))
+            .then((json) => setAdminAreaTitle((json?.label as string | null) ?? null))
+            .catch(() => setAdminAreaTitle(null));
         } else {
           setAdminAreaTitle(null);
         }
-        // If sales role, look up their salesperson record
-        if (user.role === "sales") {
-          let { data: sp } = await supabase
-            .from("salespersons")
-            .select("id")
-            .eq("user_id", session.user.id)
-            .maybeSingle();
 
-          // Auto-link silently on login if this sales account is not linked yet.
-          if (!sp?.id) {
+        // Sales: only run fix-my-link if there's neither a fresh row nor a cached id.
+        if (user.role === "sales" && !sp?.id && !cachedSpId) {
+          try {
             await fetch("/api/fix-my-link", { method: "POST", credentials: "include" });
             const relink = await supabase
               .from("salespersons")
               .select("id")
-              .eq("user_id", session.user.id)
+              .eq("user_id", userId)
               .maybeSingle();
             sp = relink.data ?? null;
+            setSalespersonId(sp?.id || null);
+            if (sp?.id && typeof window !== "undefined") {
+              window.localStorage.setItem(SP_CACHE_KEY, sp.id);
+            }
+          } catch {
+            // ignore — user can still use the app, just won't see their data scoped
           }
-          setSalespersonId(sp?.id || null);
-        } else {
+        } else if (user.role !== "sales") {
           setSalespersonId(null);
         }
       }

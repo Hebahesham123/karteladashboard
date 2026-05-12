@@ -282,31 +282,116 @@ export default function ClientsByCategoryPricePage() {
     const supabase = createClient();
 
     try {
-      // Fetch ALL clients in pages — PostgREST caps each request at 1000 rows.
       const PAGE = 1000;
-      const clientRows: { id: string; name: string; partner_id: string; salesperson_id: string | null }[] = [];
-      for (let from = 0; ; from += PAGE) {
-        let clientQuery = supabase
-          .from("clients")
-          .select("id, name, partner_id, salesperson_id")
-          .in("customer_type", [...ALLOWED_CUSTOMER_TYPES])
-          .range(from, from + PAGE - 1);
-        if (selectedSpIds.length === 1) clientQuery = clientQuery.eq("salesperson_id", selectedSpIds[0]);
-        else if (selectedSpIds.length > 1) clientQuery = clientQuery.in("salesperson_id", selectedSpIds);
-        const { data: pageRows, error: clientErr } = await clientQuery;
-        if (clientErr) throw new Error(clientErr.message);
-        if (!pageRows || pageRows.length === 0) break;
-        clientRows.push(...(pageRows as typeof clientRows));
-        if (pageRows.length < PAGE) break;
-      }
+      const ORDER_CONCURRENCY = 16;
+      const CLIENT_CONCURRENCY = 8;
+      const fromY = Math.floor(rangeFromVal / 12);
+      const toY = Math.floor(rangeToVal / 12);
 
-      const { data: spRows } = await supabase.from("salespersons").select("id, name");
+      const applyOrderFilters = <T extends { eq: any; gte: any; lte: any; in: any }>(q: T): T => {
+        let r: any = q;
+        if (!isRange) {
+          r = r.eq("month", month as number).eq("year", year as number);
+        } else {
+          r = r.gte("year", fromY).lte("year", toY);
+        }
+        if (selectedSpIds.length === 1) r = r.eq("salesperson_id", selectedSpIds[0]);
+        else if (selectedSpIds.length > 1) r = r.in("salesperson_id", selectedSpIds);
+        return r as T;
+      };
+
+      const applyClientFilters = <T extends { eq: any; in: any }>(q: T): T => {
+        let r: any = q.in("customer_type", [...ALLOWED_CUSTOMER_TYPES]);
+        if (selectedSpIds.length === 1) r = r.eq("salesperson_id", selectedSpIds[0]);
+        else if (selectedSpIds.length > 1) r = r.in("salesperson_id", selectedSpIds);
+        return r as T;
+      };
+
+      // Kick off count queries in parallel so we can paginate concurrently.
+      const orderCountP = applyOrderFilters(
+        supabase.from("orders").select("id", { count: "exact", head: true })
+      ).then(({ count }: any) => Number(count) || 0);
+      const clientCountP = applyClientFilters(
+        supabase.from("clients").select("id", { count: "exact", head: true })
+      ).then(({ count }: any) => Number(count) || 0);
+      const spRowsP = supabase.from("salespersons").select("id, name");
+
+      const [orderCount, clientCount, spRowsRes] = await Promise.all([
+        orderCountP,
+        clientCountP,
+        spRowsP,
+      ]);
+
       const spNameById = new Map<string, string>(
-        (spRows ?? []).map((s: { id: string; name?: string }) => [s.id, String(s.name ?? "")])
+        (((spRowsRes as any).data ?? []) as { id: string; name?: string }[]).map((s) => [
+          s.id,
+          String(s.name ?? ""),
+        ])
       );
 
+      // Parallel paginated fetch helper.
+      const fetchAllPaginated = async <R,>(
+        total: number,
+        concurrency: number,
+        buildPage: (from: number, to: number) => Promise<R[]>
+      ): Promise<R[]> => {
+        const pages = Math.max(1, Math.ceil(total / PAGE));
+        const out: R[] = [];
+        for (let i = 0; i < pages; i += concurrency) {
+          const batch: Promise<R[]>[] = [];
+          for (let j = i; j < Math.min(i + concurrency, pages); j++) {
+            batch.push(buildPage(j * PAGE, j * PAGE + PAGE - 1));
+          }
+          const res = await Promise.all(batch);
+          for (const arr of res) out.push(...arr);
+        }
+        return out;
+      };
+
+      // Run clients + orders fetches in parallel.
+      const clientRowsP = fetchAllPaginated<{
+        id: string;
+        name: string;
+        partner_id: string;
+        salesperson_id: string | null;
+      }>(clientCount, CLIENT_CONCURRENCY, async (from, to) => {
+        const q = applyClientFilters(
+          supabase
+            .from("clients")
+            .select("id, name, partner_id, salesperson_id")
+            .order("id", { ascending: true })
+            .range(from, to)
+        );
+        const { data, error } = await (q as any);
+        if (error) throw new Error(error.message);
+        return (data as any[]) ?? [];
+      });
+
+      const orderRowsP = fetchAllPaginated<any>(orderCount, ORDER_CONCURRENCY, async (from, to) => {
+        const q = applyOrderFilters(
+          supabase
+            .from("orders")
+            .select(
+              "id, client_id, quantity, invoice_total, category, invoice_ref, pricelist, salesperson_id, branch, invoice_date, created_at, month, year, products(name)"
+            )
+            .order("id", { ascending: true })
+            .range(from, to)
+        );
+        const { data, error } = await (q as any);
+        if (error) throw new Error(error.message);
+        const rows = (data as any[]) ?? [];
+        return isRange
+          ? rows.filter((r: any) => {
+              const v = (Number(r.year) || 0) * 12 + (Number(r.month) || 0);
+              return v >= rangeFromVal && v <= rangeToVal;
+            })
+          : rows;
+      });
+
+      const [clientRows, orderRowsAll] = await Promise.all([clientRowsP, orderRowsP]);
+
       const clientMap = new Map(
-        (clientRows ?? []).map((c: { id: string; name: string; partner_id: string; salesperson_id: string | null }) => {
+        clientRows.map((c) => {
           const sid = c.salesperson_id;
           return [
             c.id,
@@ -325,53 +410,20 @@ export default function ClientsByCategoryPricePage() {
         : filters.selectedClient
           ? [filters.selectedClient]
           : [];
-      let allowedIds = Array.from(clientMap.keys());
-      if (selectedClientIds.length > 0) {
-        allowedIds = allowedIds.filter((id) => selectedClientIds.includes(id));
+      const selectedClientSet = selectedClientIds.length > 0 ? new Set(selectedClientIds) : null;
+
+      // Only keep orders whose client is in our allowed clientMap (customer_type + salesperson).
+      const orderRows: any[] = [];
+      for (const r of orderRowsAll) {
+        const cid = r.client_id as string;
+        if (!clientMap.has(cid)) continue;
+        if (selectedClientSet && !selectedClientSet.has(cid)) continue;
+        orderRows.push(r);
       }
 
-      if (allowedIds.length === 0) {
+      if (clientMap.size === 0 || orderRows.length === 0) {
         setMatches([]);
         return;
-      }
-
-      const orderRows: any[] = [];
-      const CHUNK = 200;
-      const CONCURRENCY = 6;
-      const chunks: string[][] = [];
-      for (let i = 0; i < allowedIds.length; i += CHUNK) {
-        chunks.push(allowedIds.slice(i, i + CHUNK));
-      }
-
-      const fetchChunk = async (chunk: string[]) => {
-        const fromY = Math.floor(rangeFromVal / 12);
-        const toY = Math.floor(rangeToVal / 12);
-        let q = supabase
-          .from("orders")
-          .select(
-            "client_id, quantity, invoice_total, category, invoice_ref, pricelist, salesperson_id, branch, invoice_date, created_at, meter_breakdown, month, year, products(name)"
-          )
-          .in("client_id", chunk);
-        if (!isRange) {
-          q = q.eq("month", month as number).eq("year", year as number);
-        } else {
-          q = q.gte("year", fromY).lte("year", toY);
-        }
-        const { data, error: oe } = await q;
-        if (oe) throw new Error(oe.message);
-        const filtered = isRange
-          ? (data ?? []).filter((r: any) => {
-              const v = (Number(r.year) || 0) * 12 + (Number(r.month) || 0);
-              return v >= rangeFromVal && v <= rangeToVal;
-            })
-          : (data ?? []);
-        return filtered;
-      };
-
-      for (let i = 0; i < chunks.length; i += CONCURRENCY) {
-        const slice = chunks.slice(i, i + CONCURRENCY);
-        const batch = await Promise.all(slice.map((chunk) => fetchChunk(chunk)));
-        batch.forEach((rows) => orderRows.push(...rows));
       }
 
       const kartelaByClientBase = new Map<string, number>();
@@ -398,6 +450,8 @@ export default function ClientsByCategoryPricePage() {
       }
 
       const out: MatchRow[] = [];
+      const fallbackIds: string[] = [];
+      const fallbackIndices: number[] = [];
       for (const row of orderRows) {
         const pname = productNameFromRow(row);
         if (!pname || isKartelaProductName(pname)) continue;
@@ -419,9 +473,10 @@ export default function ClientsByCategoryPricePage() {
         const sid = row.salesperson_id as string | null;
         const lineSp = sid ? spNameById.get(sid) ?? null : null;
         const baseKey = kartelaFamilyBaseKey(pname);
-        let kartelaQty = kartelaByClientBase.get(`${cid}|${baseKey}`) ?? 0;
-        if (kartelaQty <= 0) {
-          kartelaQty = kartelaQtyFromMeterBreakdown((row as { meter_breakdown?: unknown }).meter_breakdown);
+        const kartelaQty = kartelaByClientBase.get(`${cid}|${baseKey}`) ?? 0;
+        if (kartelaQty <= 0 && row.id != null) {
+          fallbackIds.push(String(row.id));
+          fallbackIndices.push(out.length);
         }
         const irRef = String(row.invoice_ref ?? "").trim();
         let br = row.branch != null ? String(row.branch).trim() : "";
@@ -449,6 +504,39 @@ export default function ClientsByCategoryPricePage() {
           lineDate,
           kartelaQty,
         });
+      }
+
+      // Lazy-fetch meter_breakdown only for rows whose kartela qty is still zero.
+      if (fallbackIds.length > 0) {
+        const MB_CHUNK = 500;
+        const MB_CONCURRENCY = 8;
+        const mbChunks: string[][] = [];
+        for (let i = 0; i < fallbackIds.length; i += MB_CHUNK) {
+          mbChunks.push(fallbackIds.slice(i, i + MB_CHUNK));
+        }
+        const mbById = new Map<string, unknown>();
+        for (let i = 0; i < mbChunks.length; i += MB_CONCURRENCY) {
+          const slice = mbChunks.slice(i, i + MB_CONCURRENCY);
+          const results = await Promise.all(
+            slice.map(async (ids) => {
+              const { data, error } = await supabase
+                .from("orders")
+                .select("id, meter_breakdown")
+                .in("id", ids);
+              if (error) throw new Error(error.message);
+              return (data as { id: string; meter_breakdown?: unknown }[]) ?? [];
+            })
+          );
+          for (const arr of results) for (const r of arr) mbById.set(String(r.id), r.meter_breakdown);
+        }
+        for (let i = 0; i < fallbackIds.length; i++) {
+          const idx = fallbackIndices[i];
+          const mb = mbById.get(fallbackIds[i]);
+          if (mb != null) {
+            const q = kartelaQtyFromMeterBreakdown(mb);
+            if (q > 0) out[idx].kartelaQty = q;
+          }
+        }
       }
 
       out.sort((a, b) => {
