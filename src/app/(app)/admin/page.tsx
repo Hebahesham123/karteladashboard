@@ -6,9 +6,10 @@ import { ExcelUpload } from "@/components/admin/ExcelUpload";
 import { UserManagement } from "@/components/admin/UserManagement";
 import { ActivityLogTable } from "@/components/admin/ActivityLogTable";
 import { SalesAccountsManager } from "@/components/admin/SalesAccountsManager";
+import { BranchAreaManagers } from "@/components/admin/BranchAreaManagers";
 import { useStore } from "@/store/useStore";
 import { PageBack } from "@/components/layout/PageBack";
-import { Upload, Users, Activity, ShieldAlert, UserCog } from "lucide-react";
+import { Upload, Users, Activity, ShieldAlert, UserCog, Building2 } from "lucide-react";
 import { useRouter } from "next/navigation";
 
 export default function AdminPage() {
@@ -33,6 +34,10 @@ export default function AdminPage() {
     );
   }
 
+  const isSuperAdmin = Boolean(
+    (currentUser as { is_super_admin?: boolean | null } | null)?.is_super_admin ?? false
+  );
+
   const t = {
     title: isRTL ? "لوحة الإدارة" : "Admin Panel",
     subtitle: isRTL ? "إدارة وضبط النظام" : "System administration and management",
@@ -40,6 +45,7 @@ export default function AdminPage() {
     users: isRTL ? "المستخدمون" : "Users",
     logs: isRTL ? "سجل النشاط" : "Activity Log",
     salesAccounts: isRTL ? "حسابات المندوبين" : "Sales Accounts",
+    managers: isRTL ? "مديرو الفروع والمناطق" : "Branch & Area Managers",
   };
 
   return (
@@ -68,6 +74,12 @@ export default function AdminPage() {
             <UserCog className="h-4 w-4" />
             {t.salesAccounts}
           </TabsTrigger>
+          {isSuperAdmin && (
+            <TabsTrigger value="managers" className="gap-2">
+              <Building2 className="h-4 w-4" />
+              {t.managers}
+            </TabsTrigger>
+          )}
         </TabsList>
 
         <TabsContent value="upload" className="mt-6">
@@ -85,6 +97,12 @@ export default function AdminPage() {
         <TabsContent value="sales-accounts" className="mt-6">
           <SalesAccountsManager locale={locale} />
         </TabsContent>
+
+        {isSuperAdmin && (
+          <TabsContent value="managers" className="mt-6">
+            <BranchAreaManagers locale={locale} />
+          </TabsContent>
+        )}
 
       </Tabs>
     </div>
