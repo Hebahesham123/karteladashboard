@@ -74,15 +74,21 @@ export async function POST(req: NextRequest) {
       allowedBranches = branchList;
     }
     if (!scope.isSuperAdmin) {
-      if (scope.salespersonIds.length === 0) return NextResponse.json({ fields: {} });
-      const { data: okClients, error: ocErr } = await db
-        .from("clients")
-        .select("id")
-        .in("id", clientIds)
-        .in("salesperson_id", scope.salespersonIds);
-      if (ocErr) return NextResponse.json({ error: ocErr.message }, { status: 500 });
-      allowedIds = (okClients ?? []).map((c) => c.id);
-      if (allowedIds.length === 0) return NextResponse.json({ fields: {} });
+      // Branch-scoped admins: skip clients.salesperson_id filter entirely.
+      // The branch filter in fetchClientLatestOrderLineFields restricts order lines
+      // to allowed branches — a client appearing in those branches is in-scope regardless
+      // of which salesperson their primary record points to.
+      if (branchList.length === 0) {
+        if (scope.salespersonIds.length === 0) return NextResponse.json({ fields: {} });
+        const { data: okClients, error: ocErr } = await db
+          .from("clients")
+          .select("id")
+          .in("id", clientIds)
+          .in("salesperson_id", scope.salespersonIds);
+        if (ocErr) return NextResponse.json({ error: ocErr.message }, { status: 500 });
+        allowedIds = (okClients ?? []).map((c) => c.id);
+        if (allowedIds.length === 0) return NextResponse.json({ fields: {} });
+      }
     }
   }
 

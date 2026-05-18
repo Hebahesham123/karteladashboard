@@ -45,7 +45,7 @@ export async function POST() {
 
   for (const sp of (salespersons ?? []) as any[]) {
     const { error } = await (admin as any).auth.admin.updateUserById(sp.user_id, {
-      password: "sales123",
+      password: "123456",
     });
     if (error) { failed++; } else { reset++; }
   }

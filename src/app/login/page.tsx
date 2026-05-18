@@ -33,7 +33,15 @@ export default function LoginPage() {
       });
 
       if (authError) {
-        setError(authError.message);
+        const msg = (() => {
+          const m = (authError as { message?: unknown }).message;
+          if (typeof m === "string" && m.trim()) return m;
+          const s = (authError as { status?: number }).status;
+          if (s === 400) return isRTL ? "البريد أو كلمة المرور غير صحيحة" : "Invalid email or password";
+          if (s === 503) return isRTL ? "الخادم غير متاح حالياً، حاول لاحقاً" : "Server unavailable, try again";
+          return isRTL ? "تعذر تسجيل الدخول" : "Sign-in failed";
+        })();
+        setError(msg);
         return;
       }
 
@@ -50,6 +58,13 @@ export default function LoginPage() {
         role = profile?.role ?? "admin";
       }
 
+      // Hard navigation so the server-side cookies are read on the next page load.
+      // router.push() keeps the same JS bundle, so API routes get a stale empty cookie jar
+      // and return 401 until the user manually refreshes.
+      if (typeof window !== "undefined") {
+        window.location.href = role === "sales" ? "/sales" : "/dashboard";
+        return;
+      }
       router.push(role === "sales" ? "/sales" : "/dashboard");
       router.refresh();
     } catch {
@@ -173,24 +188,6 @@ export default function LoginPage() {
             </Button>
           </form>
 
-          {/* Credentials hint */}
-          <div className="mt-6 p-4 rounded-xl bg-muted/50 border border-border space-y-2">
-            <p className="text-xs font-semibold text-muted-foreground">
-              {isRTL ? "بيانات تسجيل الدخول:" : "Login credentials:"}
-            </p>
-            <div className="space-y-2 text-xs">
-              <div className="rounded-lg bg-background border border-border px-3 py-2">
-                <p className="font-semibold text-foreground mb-0.5">{isRTL ? "مدير النظام" : "Admin"}</p>
-                <p className="text-muted-foreground font-mono">admin@cartela.com</p>
-                <p className="text-muted-foreground font-mono">{isRTL ? "كلمة المرور:" : "Password:"} Admin@123456</p>
-              </div>
-              <div className="rounded-lg bg-background border border-border px-3 py-2">
-                <p className="font-semibold text-foreground mb-0.5">{isRTL ? "مندوب مبيعات" : "Salesperson"}</p>
-                <p className="text-muted-foreground">{isRTL ? "البريد: [كود]@gmail.com  (مثال: nsr2988@gmail.com)" : "Email: [code]@gmail.com  (e.g. nsr2988@gmail.com)"}</p>
-                <p className="text-muted-foreground font-mono">{isRTL ? "كلمة المرور:" : "Password:"} <span className="font-bold text-foreground">sales123</span></p>
-              </div>
-            </div>
-          </div>
         </motion.div>
       </div>
     </div>

@@ -1,0 +1,50 @@
+﻿Role,Title (AR),Name,Name (Arabic),Email,Password,Branches
+Super Admin,مدير عام,Heba Hesham,هبه هشام,hebahesham102@gmail.com,123456,All branches
+Super Admin,مدير عام,Mohamed Zayed,محمد زايد,mohamed.zayed@nstextile-eg.com,123456,All branches
+Area Manager,مدير منطقة,Ahmed Essam,أحمد عصام,ahmed.essam@nstextile-eg.com,123456,"Azhar 2, Azhar 3, Kal3a, Moskey"
+Area Manager,مدير منطقة,Shenouda Samir,شنوده سمير,shenouda.samir@nstextile-eg.com,123456,"Faisel, Helwan, Hosery"
+Area Manager,مدير منطقة,Abdelrahman Magdy,عبد الرحمن مجدي,abdelrahmanmagdy@nstextile-eg.com,123456,"Nasr city, Nozha, Maadi"
+Area Manager,مدير منطقة,Amr Elshenawy,عمرو الشناوي,amr.elshenawy@nstextile-eg.com,123456,"Tanta, Alexandria, Mansoura"
+Area Manager,مدير منطقة,Youssef Ramzy,يوسف رمزي,youssef.ramzy@nstextile-eg.com,123456,"Southgate, Madinaty, Mivida"
+Area Manager,مدير منطقة,Ahmed Magdy Bedir,أحمد مجدي بدير,ahmed.magdy.bedir@nstextile-eg.com,123456,"Mall of arabia, Mall of egypt, Trivium zayed"
+Area Manager,مدير منطقة,Sherif Hassieb,شريف يوسف حسيب,sherif.hassieb@nstextile-eg.com,123456,Damietta retail
+Branch Manager,مدير فرع,Mohammed Samir Mohammed Ali,محمد سمير محمد علي,mohammed.samir@nstextile-eg.com,123456,Azhar 2
+Branch Manager,مدير فرع,Eslam Yehia Abdelmoaty,إسلام يحيى عبدالمعطي,eslam.yehia@nstextile-eg.com,123456,Madinaty
+Branch Manager,مدير فرع,Samy Mahmoud Mohamed,سامي محمود محمد,samy.mahmoud@nstextile-eg.com,123456,Azhar 3
+Branch Manager,مدير فرع,Yassin Fathy,ياسين فتحي,yassin.fathy@nstextile-eg.com,123456,Mall of egypt
+Branch Manager,مدير فرع,Anter Amr Ahmed,عنتر عمرو أحمد,anter.amr@nstextile-eg.com,123456,Moskey
+Branch Manager,مدير فرع,Tamer Elmasry,تامر المصري,tamer.elmasry@nstextile-eg.com,123456,Hosery
+Branch Manager,مدير فرع,Ibrahim Kamel (Islam),إبراهيم كامل / إسلام,islam.ibrahim@nstextile-eg.com,123456,Nasr city
+Branch Manager,مدير فرع,Tamer Ali Abdelkhaleq,تامر علي عبد الخالق,tamerali@nstextile-eg.com,123456,Azhar 2
+Branch Manager,مدير فرع,Mohamed Roshdy,محمد رشدي,roshdy.mohamed@nstextile-eg.com,123456,Trivium zayed
+Branch Manager,مدير فرع,Haitham Mohamed Darwish,هيثم محمد درويش,haitham.mohammed@nstextile-eg.com,123456,Tagamoa
+Branch Manager,مدير فرع,Karim Mohamed Mohsen,كريم محمد محسن,karim.mohamed@nstextile-eg.com,123456,Azhar 1
+Branch Manager,مدير فرع,Sherif Youssef Hassieb,شريف يوسف حسيب,sherif.hassieb@nstextile-eg.com,123456,Damietta retail
+Branch Manager,مدير فرع,Moamen Adly Ali,مؤمن عدلي علي,momen.hamza@nstextile-eg.com,123456,Faisel
+Branch Manager,مدير فرع,Simon Khair Israel,سيمون خير إسرائيل,simon.israel@gmail.com,123456,Maadi
+Branch Manager,مدير فرع,Mohamed Ahmed Salim Afifi,محمد أحمد سليم عفيفي,mohamed.afifi@gmail.com,123456,Madinaty
+Branch Manager,مدير فرع,Mohamed Tarek Mostafa,محمد طارق مصطفى,mohamed.tarek@gmail.com,123456,Kal3a
+Branch Manager,مدير فرع,Amr Abdelati Ahmed,عمرو عبد العاطي,amr.abdelati@gmail.com,123456,Nozha
+Branch Manager,مدير فرع,Ihab Mohamed Elarabi,إيهاب محمد العربي,ihab.elarabi@gmail.com,123456,Helwan
+Branch Manager,مدير فرع,Mohamed Saad Eldaqaq,محمد سعد الدقاق,mohamed.eldaqaq@gmail.com,123456,Mansoura
+Branch Manager,مدير فرع,Amr Ayman Ali Anani,عمرو أيمن علي عناني,amr.ayman@gmail.com,123456,Alexandria
+Branch Manager,مدير فرع,Mohammed Samir (Tanta),محمد سمير محمد علي,mohamed.samir.tanta@gmail.com,123456,Tanta
+Branch Manager,مدير فرع,Osama Mohamed Aboutaleb,أسامة محمد أبو طالب,osama.aboutaleb@gmail.com,123456,Zagazig
+Branch Manager,مدير فرع,Khaled Mohamed Abdelmoneim,خالد محمد عبد المنعم,khaled.abdelmoneim@gmail.com,123456,Hosery
+Branch Manager,مدير فرع,Hassan Abdelaziz Hassan,حسن عبد العزيز حسن,hassan.abdelaziz@gmail.com,123456,Mall of egypt
+Branch Manager,مدير فرع,Sameh Saeed Othman,سامح سعيد عثمان,sameh.othman@gmail.com,123456,Trivium zayed
+Branch Manager,مدير فرع,Eslam Mohamed Gamal,إسلام محمد جمال,eslam.gamal@gmail.com,123456,Nasr city
+Branch Manager,مدير فرع,Samir Mohamed Klib,سمير محمد كليب,samir.klib@gmail.com,123456,Tanta
+Deputy Branch Manager,نائب مدير فرع,Muhammad Nabil,محمد نبيل,muhammad.nabil@nstextile-eg.com,123456,Helwan
+Deputy Branch Manager,نائب مدير فرع,Moamen Ibrahim Ali,مؤمن إبراهيم علي,moamen.ibrahim@nstextile-eg.com,123456,Tagamoa
+Deputy Branch Manager,نائب مدير فرع,Ahmed Saleh Helal,أحمد صالح هلال,ahmed.saleh@nstextile-eg.com,123456,Nozha
+Deputy Branch Manager,نائب مدير فرع,Ahmed Badawi Zaki,أحمد بدوي زكي,ahmed.badawi@nstextile-eg.com,123456,Hosery
+Deputy Branch Manager,نائب مدير فرع,Mohammed Hamouda,محمد حموده,mohammed.hamouda@nstextile-eg.com,123456,Kal3a
+Deputy Branch Manager,نائب مدير فرع,Sherif Abdelmoneim,شريف عبد المنعم,sherif.abdelmoneim@nstextile-eg.com,123456,Azhar 3
+Deputy Branch Manager,نائب مدير فرع,Mohamed Ahmed Fakhry,محمد أحمد فخري,mohamed.fakhry@nstextile-eg.com,123456,Nasr city
+Deputy Branch Manager,نائب مدير فرع,Aya Hamed Rashed,آيه حامد راشد,aya.hamed@nstextile-eg.com,123456,Damietta retail
+Deputy Branch Manager,نائب مدير فرع,Mahmoud Abdelsamie,محمود عبد السميع,mahmoued.mohamed@nstextile-eg.com,123456,Tagamoa
+Deputy Branch Manager,نائب مدير فرع,Muhammad Farag,محمد فرج,muhammad.farag@nstextile-eg.com,123456,Alexandria
+Deputy Branch Manager,نائب مدير فرع,Eslam Ibrahim Ali,إسلام إبراهيم علي,eslam.ali@nstextile-eg.com,123456,Maadi
+Deputy Branch Manager,نائب مدير فرع,Hossam Hassan Atia,حسام حسن عطيه,hossam.hassan@nstextile-eg.com,123456,Moskey
+Deputy Branch Manager,نائب مدير فرع,Hany Khalil Yacoub,هاني خليل يعقوب,hany.khalil@gmail.com,123456,Azhar 2

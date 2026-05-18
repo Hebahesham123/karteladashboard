@@ -45,16 +45,31 @@ export async function POST() {
   }
 
   const results: { code: string; email: string; name: string; status: string }[] = [];
-  const PASSWORD = "sales123";
+  const PASSWORD = "123456";
+
+  // listUsers({ filter }) is unreliable in some Supabase versions — paginate
+  // and match the email exactly so we never accept the first row by mistake.
+  const lookupByEmail = async (email: string) => {
+    const target = email.trim().toLowerCase();
+    let page = 1;
+    while (page <= 100) {
+      const res = await (admin as any).auth.admin.listUsers({ page, perPage: 1000 });
+      const users = res?.data?.users ?? [];
+      const match = users.find(
+        (u: any) => String(u?.email ?? "").trim().toLowerCase() === target
+      );
+      if (match) return match;
+      if (users.length < 1000) return null;
+      page += 1;
+    }
+    return null;
+  };
 
   for (const sp of (salespersons ?? []) as any[]) {
     const email = toEmail(sp.code);
 
-    // ── Try to find existing auth user by email (reliable, no pagination limit) ──
-    const { data: found } = await (admin as any).auth.admin.listUsers({
-      filter: `email.eq.${email}`,
-    });
-    const existingUser = found?.users?.[0] ?? null;
+    // ── Try to find existing auth user by email ──
+    const existingUser = await lookupByEmail(email);
 
     if (existingUser) {
       // Account exists → ensure public.users row is correct, then link

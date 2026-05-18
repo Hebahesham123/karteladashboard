@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient as createServerClient } from "@/lib/supabase/server";
 import { createClient } from "@supabase/supabase-js";
 import { resolveAdminBranchScope, resolveAdminScope } from "@/lib/adminScope";
+import { canonicalizeBranch, expandBranchAliases } from "@/lib/branchAliases";
 
 function getServiceClient() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -45,14 +46,20 @@ export async function GET(req: NextRequest) {
   if (branchParam === null) {
     return NextResponse.json({ error: "branch query required (use __none__ for empty branch)" }, { status: 400 });
   }
+  // The branches list shows canonical English names (e.g. "Trivium zayed") but
+  // orders.branch stores the raw upload (often Arabic, e.g. "فرع الشيخ زايد").
+  // Convert the param to its canonical and check the scope against canonicals.
+  const canonicalParam = branchParam === "__none__" ? "__none__" : canonicalizeBranch(branchParam);
   if (!adminScope.isSuperAdmin) {
-    const allowedBranches = new Set((branchScope.branches ?? []).map((b) => b.toLowerCase()));
-    if (allowedBranches.size > 0 && branchParam !== "__none__" && !allowedBranches.has(branchParam.toLowerCase())) {
+    const allowedCanonical = new Set(
+      (branchScope.branches ?? []).map((b) => canonicalizeBranch(b))
+    );
+    if (allowedCanonical.size > 0 && canonicalParam !== "__none__" && !allowedCanonical.has(canonicalParam)) {
       return NextResponse.json({ error: "Forbidden for this branch" }, { status: 403 });
     }
   }
 
-  const isNone = branchParam === "__none__";
+  const isNone = canonicalParam === "__none__";
   let q = db
     .from("orders")
     .select(
@@ -69,7 +76,9 @@ export async function GET(req: NextRequest) {
   if (isNone) {
     q = q.or('branch.is.null,branch.eq.""');
   } else {
-    q = q.eq("branch", branchParam);
+    // Expand to every known DB string for this canonical (covers Arabic/spelling variants).
+    const variants = expandBranchAliases(canonicalParam);
+    q = q.in("branch", variants);
   }
 
   const { data: orders, error: orderErr } = await q;

@@ -71,8 +71,14 @@ export async function POST(req: Request) {
     serviceKey,
     { auth: { autoRefreshToken: false, persistSession: false } },
   );
+  // Preserve existing user_metadata, only clearing the force_password_change flag.
+  const prevMetadata = (user.user_metadata ?? {}) as Record<string, unknown>;
+  const { force_password_change: _drop, ...nextMetadata } = prevMetadata;
+  void _drop;
+
   const { error: updateErr } = await admin.auth.admin.updateUserById(user.id, {
     password: newPassword,
+    user_metadata: nextMetadata,
   });
   if (updateErr) {
     return NextResponse.json({ error: updateErr.message }, { status: 500 });

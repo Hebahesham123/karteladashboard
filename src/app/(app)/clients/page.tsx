@@ -202,6 +202,50 @@ export default function ClientsPage() {
           new Promise<T>((_, reject) => setTimeout(() => reject(new Error(`timeout-${ms}ms`)), ms)),
         ]);
 
+      // Branch-scoped admins: fetch their actual allowed branch names so the
+      // client_monthly_metrics view query filters server-side instead of
+      // dragging back every row and hoping the import-fields API saves us.
+      let scopedAllowedBranches: string[] = [];
+      const isBranchScopedAdmin =
+        currentUser?.role === "admin" &&
+        !Boolean((currentUser as { is_super_admin?: boolean | null } | null)?.is_super_admin ?? false);
+      if (isBranchScopedAdmin) {
+        try {
+          const r = await fetch("/api/me/admin-area", { credentials: "include" });
+          const j = (await r.json()) as { areas?: string[] | null };
+          const aliasNames = Array.isArray(j.areas) ? j.areas.map((s) => String(s ?? "").trim()).filter(Boolean) : [];
+          if (aliasNames.length > 0) {
+            const aliasRes = await supabase
+              .from("branch_aliases")
+              .select("alias_name, actual_branches")
+              .in("alias_name", aliasNames);
+            const set = new Set<string>();
+            for (const row of (aliasRes.data ?? []) as { alias_name: string; actual_branches: string[] | null }[]) {
+              if (Array.isArray(row.actual_branches)) {
+                for (const b of row.actual_branches) {
+                  const v = String(b ?? "").trim();
+                  if (v) set.add(v);
+                }
+              }
+            }
+            // If no alias mapping for some names, fall back to the raw alias literal.
+            for (const a of aliasNames) {
+              const k = a.toLowerCase();
+              const matched = (aliasRes.data ?? []).some(
+                (r: any) => String(r.alias_name ?? "").trim().toLowerCase() === k
+              );
+              if (!matched) set.add(a);
+            }
+            scopedAllowedBranches = Array.from(set);
+          }
+        } catch {
+          // If we can't resolve the scope, leave it empty — the page will show no rows
+          // rather than leaking data outside the admin's branches.
+          scopedAllowedBranches = [];
+        }
+      }
+      const applyBranchScope = scopedAllowedBranches.length > 0;
+
       const VIEW_COLS =
         "client_id, partner_id, client_name, current_status, total_meters, total_revenue, order_count, customer_type, level, cartela_count, top_product_cartela, top_product_name, salesperson_id, salesperson_name, salesperson_code, month, year, kartela_month, kartela_year, kartela_cross_month, " +
         "order_import_category, order_import_pricelist, order_import_invoice, order_import_branch, order_import_line_at, order_import_invoice_date, order_import_created_at";
@@ -215,6 +259,7 @@ export default function ClientsPage() {
           .eq("year", selectedYear)
           .in("customer_type", [...ALLOWED_CUSTOMER_TYPES]);
         if (spFilter) q = q.eq("salesperson_id", spFilter);
+        if (applyBranchScope) q = q.in("order_import_branch", scopedAllowedBranches);
         return q;
       };
       const inactiveClientsQ = (async () => {
@@ -265,6 +310,7 @@ export default function ClientsPage() {
           .eq("year", selectedYear)
           .in("customer_type", [...ALLOWED_CUSTOMER_TYPES]);
         if (spFilter) q = q.eq("salesperson_id", spFilter);
+        if (applyBranchScope) q = q.in("order_import_branch", scopedAllowedBranches);
         return q;
       })();
 
@@ -399,29 +445,21 @@ export default function ClientsPage() {
       };
 
       // Prefer columns from client_monthly_metrics (DB view); API only fills gaps.
-      if (isScopedAdmin) {
-        // Strict branch mode: never keep import fields coming from precomputed views.
-        // We refill these only from the scoped API response.
-        combined.forEach((c) => {
-          c.order_import_category = null;
-          c.order_import_pricelist = null;
-          c.order_import_invoice = null;
-          c.order_import_branch = null;
-          c.order_import_day_date = null;
-        });
-      }
-      const idsForImport = isScopedAdmin
-        ? combined.map((c) => c.id)
-        : combined
-            .filter(
-              (c) =>
-                !c.order_import_category ||
-                !c.order_import_pricelist ||
-                !c.order_import_invoice ||
-                !c.order_import_branch ||
-                !c.order_import_day_date
-            )
-            .map((c) => c.id);
+      // Previously this branch wiped fields for scoped admins and relied entirely on the
+      // /api/clients/order-import-fields response. That left columns blank whenever the
+      // API failed or timed out. The MV query is now branch-filtered (see buildViewQ above),
+      // so the row's order_import_* values are guaranteed to be in-scope already — keep them
+      // and only call the API for rows where the MV is sparse.
+      const idsForImport = combined
+        .filter(
+          (c) =>
+            !c.order_import_category ||
+            !c.order_import_pricelist ||
+            !c.order_import_invoice ||
+            !c.order_import_branch ||
+            !c.order_import_day_date
+        )
+        .map((c) => c.id);
       if (idsForImport.length > 0) {
         const mergedByClient = new Map<string, ClientOrderImportFields>();
         const CHUNK = 800;

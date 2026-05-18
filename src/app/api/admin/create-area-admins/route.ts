@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { createClient as createServerClient } from "@/lib/supabase/server";
 import { createClient } from "@supabase/supabase-js";
+import { expandBranchAliases } from "@/lib/branchAliases";
 
 export const dynamic = "force-dynamic";
 
@@ -10,19 +11,9 @@ type AreaAdminSeed = {
   branches: string[];
 };
 
-const DEFAULT_PASSWORD = "1234";
+const DEFAULT_PASSWORD = "123456";
 
 const AREA_ADMINS: AreaAdminSeed[] = [
-  {
-    full_name: "Youssef Ramzy",
-    email: "youssef.ramzy@nstextile-eg.com",
-    branches: ["Southgate", "Mivida", "Trivium zayed", "Mall of arabia", "Mall of egypt"],
-  },
-  {
-    full_name: "Ahmed Magdy Bedir",
-    email: "ahmed.magdy.bedir@nstextile-eg.com",
-    branches: ["Mall of Arabia", "Mall of egypt", "Trivium zayed"],
-  },
   {
     full_name: "Ahmed Essam",
     email: "ahmed.essam@nstextile-eg.com",
@@ -41,7 +32,22 @@ const AREA_ADMINS: AreaAdminSeed[] = [
   {
     full_name: "Amr Elshenawy",
     email: "amr.elshenawy@nstextile-eg.com",
-    branches: ["Tanta", "Alexandria"],
+    branches: ["Tanta", "Alexandria", "Mansoura"],
+  },
+  {
+    full_name: "Youssef Ramzy",
+    email: "youssef.ramzy@nstextile-eg.com",
+    branches: ["Southgate", "Madinaty", "Mivida"],
+  },
+  {
+    full_name: "Ahmed Magdy Bedir",
+    email: "ahmed.magdy.bedir@nstextile-eg.com",
+    branches: ["Mall of arabia", "Mall of egypt", "Trivium zayed"],
+  },
+  {
+    full_name: "Sherif Hassieb",
+    email: "sherif.hassieb@nstextile-eg.com",
+    branches: ["Damietta retail"],
   },
 ];
 
@@ -88,14 +94,29 @@ export async function POST() {
     message?: string;
   }> = [];
 
+  // listUsers({ filter }) is unreliable in some Supabase versions — verify the
+  // email match exactly so we never accept the first row as a false positive.
+  const lookupByEmail = async (email: string) => {
+    const target = email.trim().toLowerCase();
+    let page = 1;
+    while (page <= 100) {
+      const res = await (admin as any).auth.admin.listUsers({ page, perPage: 1000 });
+      const users = res?.data?.users ?? [];
+      const match = users.find(
+        (u: any) => String(u?.email ?? "").trim().toLowerCase() === target
+      );
+      if (match) return match;
+      if (users.length < 1000) return null;
+      page += 1;
+    }
+    return null;
+  };
+
   for (const seed of AREA_ADMINS) {
     try {
       let userId: string | null = null;
 
-      const listed = await (admin as any).auth.admin.listUsers({
-        filter: `email.eq.${seed.email}`,
-      });
-      const existing = listed.data?.users?.[0] ?? null;
+      const existing = await lookupByEmail(seed.email);
 
       if (existing?.id) {
         userId = existing.id;
@@ -141,17 +162,27 @@ export async function POST() {
       }
 
       const salespersonIds = new Set<string>();
-      for (const branch of seed.branches) {
-        const { data: rows, error } = await (admin as any)
-          .from("orders")
-          .select("salesperson_id")
-          .ilike("branch", branch)
-          .not("salesperson_id", "is", null)
-          .limit(5000);
-        if (error) throw new Error(error.message);
-        for (const row of rows ?? []) {
-          const sid = String((row as { salesperson_id?: string | null }).salesperson_id ?? "").trim();
-          if (sid) salespersonIds.add(sid);
+      // Expand every canonical branch into all its known DB string variants
+      // (Arabic + English + alternate spellings) so we actually find the rows.
+      const branchVariants = Array.from(
+        new Set(seed.branches.flatMap((b) => expandBranchAliases(b)))
+      );
+      if (branchVariants.length > 0) {
+        const PAGE = 1000;
+        for (let from = 0; ; from += PAGE) {
+          const { data: rows, error } = await (admin as any)
+            .from("orders")
+            .select("salesperson_id")
+            .in("branch", branchVariants)
+            .not("salesperson_id", "is", null)
+            .range(from, from + PAGE - 1);
+          if (error) throw new Error(error.message);
+          if (!rows?.length) break;
+          for (const row of rows) {
+            const sid = String((row as { salesperson_id?: string | null }).salesperson_id ?? "").trim();
+            if (sid) salespersonIds.add(sid);
+          }
+          if (rows.length < PAGE) break;
         }
       }
 

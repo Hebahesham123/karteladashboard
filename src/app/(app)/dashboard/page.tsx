@@ -166,8 +166,70 @@ export default function DashboardPage() {
   const [salespersons, setSalespersons] = useState<{ id: string; name: string }[]>([]);
   const [branches, setBranches] = useState<string[]>([]);
   const [selectedBranches, setSelectedBranches] = useState<string[]>([]);
+  const [adminScopeBranches, setAdminScopeBranches] = useState<string[]>([]);
   const [branchOpen, setBranchOpen] = useState(false);
   const dashYears = Array.from({ length: 3 }, (_, i) => now.getFullYear() - i);
+
+  // Branch-scoped admins: resolve their alias → actual Arabic branch names
+  // and apply as a hard ceiling on every KPI query below.
+  useEffect(() => {
+    let cancelled = false;
+    const isBranchScopedAdmin =
+      currentUser?.role === "admin" &&
+      !Boolean((currentUser as { is_super_admin?: boolean | null } | null)?.is_super_admin ?? false);
+    if (!isBranchScopedAdmin) {
+      setAdminScopeBranches([]);
+      return;
+    }
+    (async () => {
+      try {
+        const r = await fetch("/api/me/admin-area", { credentials: "include" });
+        const j = (await r.json()) as { areas?: string[] | null };
+        const aliasNames = Array.isArray(j.areas)
+          ? j.areas.map((s) => String(s ?? "").trim()).filter(Boolean)
+          : [];
+        if (aliasNames.length === 0) {
+          if (!cancelled) setAdminScopeBranches([]);
+          return;
+        }
+        const supabase = createClient();
+        const aliasRes = await supabase
+          .from("branch_aliases")
+          .select("alias_name, actual_branches")
+          .in("alias_name", aliasNames);
+        const set = new Set<string>();
+        for (const row of (aliasRes.data ?? []) as { alias_name: string; actual_branches: string[] | null }[]) {
+          if (Array.isArray(row.actual_branches)) {
+            for (const b of row.actual_branches) {
+              const v = String(b ?? "").trim();
+              if (v) set.add(v);
+            }
+          }
+        }
+        for (const a of aliasNames) {
+          const k = a.toLowerCase();
+          const matched = (aliasRes.data ?? []).some(
+            (r: any) => String(r.alias_name ?? "").trim().toLowerCase() === k
+          );
+          if (!matched) set.add(a);
+        }
+        if (!cancelled) setAdminScopeBranches(Array.from(set));
+      } catch {
+        if (!cancelled) setAdminScopeBranches([]);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [currentUser]);
+
+  // Helper: intersect the user's branch scope (if any) with manually selected branches.
+  const computeEffectiveBranches = useCallback((picked: string[]) => {
+    if (adminScopeBranches.length === 0) return picked;
+    if (picked.length === 0) return adminScopeBranches;
+    const allowed = new Set(adminScopeBranches);
+    return picked.filter((b) => allowed.has(b));
+  }, [adminScopeBranches]);
 
   // Load salesperson + product lists once (customer types: VIP / تجاري / جملة)
   useEffect(() => {
@@ -363,32 +425,62 @@ export default function DashboardPage() {
         return out;
       })();
 
+      // Promise wrapper that rejects after `ms` so a slow query can't freeze the page.
+      const withTimeout = <T,>(p: Promise<T>, ms: number, label: string): Promise<T> =>
+        new Promise<T>((resolve, reject) => {
+          const t = setTimeout(() => reject(new Error(`timeout ${ms}ms: ${label}`)), ms);
+          p.then((v) => { clearTimeout(t); resolve(v); })
+           .catch((e) => { clearTimeout(t); reject(e); });
+        });
+
       const safePages = async (table: string, cols: string, applyFilters: (q: any) => any) => {
+        const CONCURRENCY = 8;
+        const COUNT_TIMEOUT_MS = 8000;
+        const PAGE_TIMEOUT_MS = 12000;
         const all: any[] = [];
-        let from = 0;
-        while (true) {
-          const pageQuery = applyFilters(
-            supabase.from(table).select(cols)
+        try {
+          const countQ = applyFilters(supabase.from(table).select(cols, { count: "exact", head: true }));
+          const { count: total, error: countErr } = await withTimeout(
+            countQ as unknown as Promise<{ count: number | null; error: any }>,
+            COUNT_TIMEOUT_MS,
+            `${table} count`,
           );
-          const { data, error } = await pageQuery.range(from, from + PAGE_SIZE - 1);
-          if (error) {
-            // Never return a silently truncated 1000-row result.
-            // Fallback once to a broad single-range read, then fail loudly.
-            console.error(`[dashboard] paged fetch failed for ${table} at offset ${from}:`, error.message);
-            const { data: fallback, error: fbErr } = await pageQuery.range(0, 29999);
-            if (fbErr) throw new Error(`[${table}] ${fbErr.message}`);
-            return fallback ?? all;
+          if (countErr) throw new Error(countErr.message);
+          const n = Math.max(0, Number(total ?? 0));
+          if (n === 0) return all;
+          const pages = Math.ceil(n / PAGE_SIZE);
+          for (let i = 0; i < pages; i += CONCURRENCY) {
+            const slice = Array.from(
+              { length: Math.min(CONCURRENCY, pages - i) },
+              (_, j) => i + j,
+            );
+            const results = await Promise.all(
+              slice.map((idx) =>
+                withTimeout(
+                  applyFilters(supabase.from(table).select(cols)).range(
+                    idx * PAGE_SIZE,
+                    idx * PAGE_SIZE + PAGE_SIZE - 1,
+                  ) as unknown as Promise<{ data: any[] | null; error: any }>,
+                  PAGE_TIMEOUT_MS,
+                  `${table} page ${idx}`,
+                )
+              ),
+            );
+            for (const r of results) {
+              if (r.error) throw new Error(r.error.message);
+              if (r.data) all.push(...r.data);
+            }
           }
-          if (!data) break;
-          all.push(...data);
-          if (data.length < PAGE_SIZE) break;
-          from += PAGE_SIZE;
+          return all;
+        } catch (e) {
+          console.error(`[dashboard] paged fetch failed for ${table}:`, e);
+          // Return whatever we managed to collect so the page can render instead of hanging.
+          return all;
         }
-        return all;
       };
       const safeCountOnly = async (build: () => any) => {
         try {
-          const res = await build();
+          const res = await withTimeout(build() as Promise<any>, 8000, "count");
           return Number((res as any)?.count) || 0;
         } catch {
           return 0;
@@ -422,11 +514,14 @@ export default function DashboardPage() {
           ? selectedCustTypes.filter((t) => (ALLOWED_CUSTOMER_TYPES as readonly string[]).includes(t))
           : [...ALLOWED_CUSTOMER_TYPES];
 
+      // Hard branch scope for branch-scoped admins — applied to every query in this fetch.
+      const effectiveBranches = computeEffectiveBranches(selectedBranches);
+
       const kpiQuery = (q: any) => {
         let qq = q.gte("year", dashFrom.year).lte("year", dashTo.year);
         if (dashFrom.year === dashTo.year) qq = qq.gte("month", dashFrom.month).lte("month", dashTo.month);
         if (spFilter) qq = qq.eq("salesperson_id", spFilter);
-        if (selectedBranches.length > 0) qq = qq.in("order_import_branch", selectedBranches);
+        if (effectiveBranches.length > 0) qq = qq.in("order_import_branch", effectiveBranches);
         qq = qq.in("customer_type", custTypesForFilter);
         if (selectedProductNames.length > 0) qq = qq.in("top_product_name", selectedProductNames);
         if (selectedClientIds.length > 0) qq = qq.in("client_id", selectedClientIds);
@@ -484,7 +579,7 @@ export default function DashboardPage() {
             .lte("year", dashTo.year);
           if (dashFrom.year === dashTo.year) q = q.gte("month", dashFrom.month).lte("month", dashTo.month);
           if (spFilter) q = q.eq("salesperson_id", spFilter);
-          if (selectedBranches.length > 0) q = q.in("branch", selectedBranches);
+          if (effectiveBranches.length > 0) q = q.in("branch", effectiveBranches);
           if (selectedClientIds.length > 0) q = q.in("client_id", selectedClientIds);
           return q;
         }),
@@ -500,42 +595,56 @@ export default function DashboardPage() {
 
       // ── 3. Fallback: if range empty, use latest available month ───────────
       if (kpiRows.length === 0) {
-        const latestQ = await (() => {
-          let q = supabase.from("client_monthly_metrics")
-            .select("month, year")
-            .order("year",  { ascending: false })
-            .order("month", { ascending: false })
-            .limit(1);
-          if (spFilter) q = q.eq("salesperson_id", spFilter);
-          if (selectedBranches.length > 0) q = q.in("order_import_branch", selectedBranches);
-          return q;
-        })();
-        const latest = latestQ.data?.[0];
-        if (latest?.month && latest?.year) {
-          kpiRows = await safePages("client_monthly_metrics", "client_id, total_meters, total_revenue, order_count, cartela_count, level, month, year, customer_type", (q) => {
-            let qq = q.eq("year", Number(latest.year)).eq("month", Number(latest.month));
-            if (spFilter) qq = qq.eq("salesperson_id", spFilter);
-            qq = qq.in("customer_type", custTypesForFilter);
-            if (selectedProductNames.length > 0) qq = qq.in("top_product_name", selectedProductNames);
-            if (selectedClientIds.length > 0) qq = qq.in("client_id", selectedClientIds);
-            return qq;
-          });
+        try {
+          const latestPromise = (() => {
+            let q = supabase.from("client_monthly_metrics")
+              .select("month, year")
+              .order("year",  { ascending: false })
+              .order("month", { ascending: false })
+              .limit(1);
+            if (spFilter) q = q.eq("salesperson_id", spFilter);
+            if (effectiveBranches.length > 0) q = q.in("order_import_branch", effectiveBranches);
+            return q;
+          })();
+          const latestQ = await withTimeout(
+            latestPromise as unknown as Promise<{ data: any[] | null; error: any }>,
+            5000,
+            "latest month lookup",
+          );
+          const latest = latestQ.data?.[0];
+          if (latest?.month && latest?.year) {
+            kpiRows = await safePages("client_monthly_metrics", "client_id, total_meters, total_revenue, order_count, cartela_count, level, month, year, customer_type", (q) => {
+              let qq = q.eq("year", Number(latest.year)).eq("month", Number(latest.month));
+              if (spFilter) qq = qq.eq("salesperson_id", spFilter);
+              qq = qq.in("customer_type", custTypesForFilter);
+              if (selectedProductNames.length > 0) qq = qq.in("top_product_name", selectedProductNames);
+              if (selectedClientIds.length > 0) qq = qq.in("client_id", selectedClientIds);
+              return qq;
+            });
+          }
+        } catch (e) {
+          // View too slow — skip fallback; RPC already populated the main tiles.
+          console.warn("[dashboard] latest-month fallback skipped:", e);
         }
       }
 
       // ── 4. Summarize — compute totals and level sub-metrics ───────────────
+      // If the slow row-level fetch returned nothing (timeout), keep the RPC values.
+      const hasRows = kpiRows.length > 0;
       const { totalM, greenC, orangeC, activeC, clientCount } = summarize(kpiRows);
       const kartelaQty = Math.round(kpiRows.reduce((s: number, r: any) => s + (Number(r.cartela_count) || 0), 0));
       const kartelaClientSet = new Set<string>();
       kpiRows.forEach((r: any) => {
         if ((Number(r.cartela_count) || 0) > 0 && r.client_id) kartelaClientSet.add(String(r.client_id));
       });
-      setKartelaTotal(kartelaQty);
-      setKartelaClients(kartelaClientSet.size);
+      if (hasRows) {
+        setKartelaTotal(kartelaQty);
+        setKartelaClients(kartelaClientSet.size);
+      }
 
-      // Aggregate total revenue
+      // Aggregate total revenue — only overwrite RPC value if we have row data.
       const totalRev = kpiRows.reduce((s: number, r: any) => s + (Number(r.total_revenue) || 0), 0);
-      setTotalRevenue(Math.round(totalRev));
+      if (hasRows) setTotalRevenue(Math.round(totalRev));
 
       let greenC_final = greenC;
       let orangeC_final = orangeC;
@@ -577,18 +686,27 @@ export default function DashboardPage() {
 
       const consistentMonthly = greenC_final + orangeC_final + redC;
 
-      setTotalMetersValue(Math.round(totalM));
-      setGreenCount(greenC_final);
-      setGreenMeters(Math.round(levelAgg.GREEN.meters));
-      setGreenOrders(levelAgg.GREEN.orders);
-      setOrangeCount(orangeC_final);
-      setOrangeMeters(Math.round(levelAgg.ORANGE.meters));
-      setOrangeOrders(levelAgg.ORANGE.orders);
-      setRedCount(redC);
-      setRedOrders(levelAgg.RED.orders);
-      setActiveClientCount(activeC);
+      // Only overwrite the RPC-populated tiles when the slow query actually returned data.
+      if (hasRows) {
+        setTotalMetersValue(Math.round(totalM));
+        setGreenCount(greenC_final);
+        setOrangeCount(orangeC_final);
+        setRedCount(redC);
+        setActiveClientCount(activeC);
+      }
+      // Level meters/orders breakdowns only exist in the row-level data — leave them
+      // at their previous state when we have no rows.
+      if (hasRows) {
+        setGreenMeters(Math.round(levelAgg.GREEN.meters));
+        setGreenOrders(levelAgg.GREEN.orders);
+        setOrangeMeters(Math.round(levelAgg.ORANGE.meters));
+        setOrangeOrders(levelAgg.ORANGE.orders);
+        setRedOrders(levelAgg.RED.orders);
+      }
       setMonthlyClientCount(consistentMonthly);
-      kpiCacheRef.current.set(cacheKey, { totalM: Math.round(totalM), greenC: greenC_final, orangeC: orangeC_final, redC, activeC });
+      if (hasRows) {
+        kpiCacheRef.current.set(cacheKey, { totalM: Math.round(totalM), greenC: greenC_final, orangeC: orangeC_final, redC, activeC });
+      }
 
       // ── 5. Previous month (single-month only): same filters → compare all KPI boxes
       let prevM = 0;
@@ -606,7 +724,7 @@ export default function DashboardPage() {
           (q) => {
             let qq = q.eq("month", prevEndMonth).eq("year", prevEndYear).in("customer_type", custTypesForFilter);
             if (spFilter) qq = qq.eq("salesperson_id", spFilter);
-            if (selectedBranches.length > 0) qq = qq.in("order_import_branch", selectedBranches);
+            if (effectiveBranches.length > 0) qq = qq.in("order_import_branch", effectiveBranches);
             if (selectedProductNames.length > 0) qq = qq.in("top_product_name", selectedProductNames);
             if (selectedClientIds.length > 0) qq = qq.in("client_id", selectedClientIds);
             return qq;
@@ -638,7 +756,7 @@ export default function DashboardPage() {
             .eq("month", prevEndMonth)
             .eq("year", prevEndYear);
           if (spFilter) oq = oq.eq("salesperson_id", spFilter);
-          if (selectedBranches.length > 0) oq = oq.in("branch", selectedBranches);
+          if (effectiveBranches.length > 0) oq = oq.in("branch", effectiveBranches);
           if (selectedClientIds.length > 0) oq = oq.in("client_id", selectedClientIds);
           const { count } = await oq;
           prevO = (count as number) || 0;
@@ -694,10 +812,16 @@ export default function DashboardPage() {
             }));
       setMonthlyTrend(trend);
 
-      if (selectedProductNames.length > 0) {
-        orderCountFinal = kpiRows.reduce((s: number, r: any) => s + (Number(r.order_count) || 0), 0);
+      // Prefer counting from the rows we already have (always reliable when present).
+      // Falls back to the safeCountOnly result if rows are empty.
+      const orderCountFromRows = hasRows
+        ? kpiRows.reduce((s: number, r: any) => s + (Number(r.order_count) || 0), 0)
+        : 0;
+      orderCountFinal = orderCountFromRows > 0 ? orderCountFromRows : (Number(orderCountRes) || 0);
+      // Only overwrite the RPC value when we actually got a positive number.
+      if (orderCountFinal > 0) {
+        setOrderCount(orderCountFinal);
       }
-      setOrderCount(orderCountFinal);
       dataCache.set(cacheKey, {
         totalM: Math.round(totalM), greenC: greenC_final, orangeC: orangeC_final, redC, activeC,
         monthlyC: consistentMonthly, prevM, prevR, prevO, prevMc, prevLg, prevLo, prevLr, prevDorm, trend, totalClients: denominatorCount,
@@ -730,7 +854,7 @@ export default function DashboardPage() {
       setLoading(false);
       setIsRefreshing(false);
     }
-  }, [dashFrom, dashTo, filters.selectedSalesperson, salespersonId, hasLoadedOnce, selectedProductNames, selectedClientIds, selectedCustTypes, selectedBranches]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [dashFrom, dashTo, filters.selectedSalesperson, salespersonId, hasLoadedOnce, selectedProductNames, selectedClientIds, selectedCustTypes, selectedBranches, adminScopeBranches]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => { fetchData(); }, [fetchData]);
 
@@ -778,12 +902,15 @@ export default function DashboardPage() {
           ? selectedCustTypes.filter((t) => (ALLOWED_CUSTOMER_TYPES as readonly string[]).includes(t))
           : [...ALLOWED_CUSTOMER_TYPES];
 
+      // Hard branch scope applies to rankings too.
+      const effectiveBranchesRank = computeEffectiveBranches(selectedBranches);
+
       /** Same filters as main KPI `kpiQuery` so rankings match the dashboard. */
       const rankingCmmQuery = (q: any) => {
         let qq = q.gte("year", dashFrom.year).lte("year", dashTo.year);
         if (dashFrom.year === dashTo.year) qq = qq.gte("month", dashFrom.month).lte("month", dashTo.month);
         if (spFilter) qq = qq.eq("salesperson_id", spFilter);
-        if (selectedBranches.length > 0) qq = qq.in("order_import_branch", selectedBranches);
+        if (effectiveBranchesRank.length > 0) qq = qq.in("order_import_branch", effectiveBranchesRank);
         qq = qq.in("customer_type", custTypesForFilter);
         if (selectedProductNames.length > 0) qq = qq.in("top_product_name", selectedProductNames);
         if (selectedClientIds.length > 0) qq = qq.in("client_id", selectedClientIds);
@@ -958,7 +1085,7 @@ export default function DashboardPage() {
     } finally {
       setRankLoading(false);
     }
-  }, [dashFrom, dashTo, filters.selectedSalesperson, salespersonId, selectedProductNames, selectedClientIds, selectedCustTypes, selectedBranches]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [dashFrom, dashTo, filters.selectedSalesperson, salespersonId, selectedProductNames, selectedClientIds, selectedCustTypes, selectedBranches, adminScopeBranches]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => { fetchRankings(); }, [fetchRankings]);
 

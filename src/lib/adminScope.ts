@@ -58,25 +58,66 @@ export async function resolveAdminScope(db: any, userId: string): Promise<AdminS
     }
     return { isSuperAdmin: false, salespersonIds: [] };
   }
-  const branches = (branchRes.data ?? [])
+  const aliasNames = (branchRes.data ?? [])
     .map((r: { branch_name: string | null }) => String(r.branch_name ?? "").trim())
     .filter(Boolean);
-  if (branches.length === 0) {
+  if (aliasNames.length === 0) {
     return { isSuperAdmin: false, salespersonIds: [] };
   }
 
+  // Expand admin_branch_scope aliases to actual orders.branch values via branch_aliases.
+  const actualBranches = new Set<string>();
+  try {
+    const aliasRes = await db
+      .from("branch_aliases")
+      .select("alias_name, actual_branches")
+      .in("alias_name", aliasNames);
+    if (aliasRes.error && !isMissingColumnOrTable(String(aliasRes.error.message ?? ""))) {
+      throw new Error(aliasRes.error.message);
+    }
+    const aliasMap = new Map<string, string[]>();
+    for (const row of aliasRes.data ?? []) {
+      const r = row as { alias_name?: string | null; actual_branches?: string[] | null };
+      const k = String(r.alias_name ?? "").trim().toLowerCase();
+      if (!k) continue;
+      const arr = Array.isArray(r.actual_branches)
+        ? r.actual_branches.map((x) => String(x ?? "").trim()).filter(Boolean)
+        : [];
+      aliasMap.set(k, arr);
+    }
+    for (const alias of aliasNames) {
+      const mapped = aliasMap.get(alias.toLowerCase());
+      if (mapped && mapped.length > 0) {
+        for (const m of mapped) actualBranches.add(m);
+      } else {
+        actualBranches.add(alias);
+      }
+    }
+  } catch {
+    for (const a of aliasNames) actualBranches.add(a);
+  }
+
   const ids = new Set<string>();
-  for (const b of branches) {
-    const { data, error } = await db
-      .from("orders")
-      .select("salesperson_id")
-      .ilike("branch", `%${b}%`)
-      .not("salesperson_id", "is", null)
-      .limit(5000);
-    if (error) throw new Error(error.message);
-    for (const row of data ?? []) {
-      const sid = String((row as { salesperson_id?: string | null }).salesperson_id ?? "").trim();
-      if (sid) ids.add(sid);
+  // Use exact match (branch IN actual) — aliases already expand to the literal Arabic names in orders.branch.
+  const actualList = Array.from(actualBranches);
+  if (actualList.length > 0) {
+    const PAGE = 5000;
+    let from = 0;
+    for (;;) {
+      const { data, error } = await db
+        .from("orders")
+        .select("salesperson_id")
+        .in("branch", actualList)
+        .not("salesperson_id", "is", null)
+        .range(from, from + PAGE - 1);
+      if (error) throw new Error(error.message);
+      if (!data?.length) break;
+      for (const row of data) {
+        const sid = String((row as { salesperson_id?: string | null }).salesperson_id ?? "").trim();
+        if (sid) ids.add(sid);
+      }
+      if (data.length < PAGE) break;
+      from += PAGE;
     }
   }
   return { isSuperAdmin: false, salespersonIds: Array.from(ids) };
@@ -102,15 +143,52 @@ export async function resolveAdminBranchScope(db: any, userId: string): Promise<
     }
     return { branches: [] };
   }
-  const seen = new Set<string>();
-  const branches: string[] = [];
+  const aliasNames: string[] = [];
+  const seenAlias = new Set<string>();
   for (const row of res.data ?? []) {
     const b = String((row as { branch_name?: string | null }).branch_name ?? "").trim();
     if (!b) continue;
     const k = b.toLowerCase();
-    if (seen.has(k)) continue;
-    seen.add(k);
-    branches.push(b);
+    if (seenAlias.has(k)) continue;
+    seenAlias.add(k);
+    aliasNames.push(b);
   }
-  return { branches };
+  if (aliasNames.length === 0) return { branches: [] };
+
+  // Expand aliases via branch_aliases → actual branch values found in orders.branch.
+  // If the aliases table is missing or has no row for an alias, fall back to the alias literal.
+  const expanded = new Set<string>();
+  try {
+    const aliasRes = await db
+      .from("branch_aliases")
+      .select("alias_name, actual_branches")
+      .in("alias_name", aliasNames);
+    if (aliasRes.error && !isMissingColumnOrTable(String(aliasRes.error.message ?? ""))) {
+      throw new Error(aliasRes.error.message);
+    }
+    const aliasMap = new Map<string, string[]>();
+    for (const row of aliasRes.data ?? []) {
+      const r = row as { alias_name?: string | null; actual_branches?: string[] | null };
+      const k = String(r.alias_name ?? "").trim().toLowerCase();
+      if (!k) continue;
+      const arr = Array.isArray(r.actual_branches)
+        ? r.actual_branches.map((x) => String(x ?? "").trim()).filter(Boolean)
+        : [];
+      aliasMap.set(k, arr);
+    }
+    for (const alias of aliasNames) {
+      const mapped = aliasMap.get(alias.toLowerCase());
+      if (mapped && mapped.length > 0) {
+        for (const m of mapped) expanded.add(m);
+      } else {
+        // No alias mapping — assume the value is already an actual branch.
+        expanded.add(alias);
+      }
+    }
+  } catch {
+    // If branch_aliases table cannot be read, fall back to raw values so we never silently lock the user out.
+    for (const a of aliasNames) expanded.add(a);
+  }
+
+  return { branches: Array.from(expanded) };
 }
