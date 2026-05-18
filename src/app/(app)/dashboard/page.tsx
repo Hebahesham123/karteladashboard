@@ -319,8 +319,19 @@ export default function DashboardPage() {
     const prodKey = [...selectedProductNames].sort().join("|");
     const cliKey = [...selectedClientIds].sort().join("|");
     const custKey = [...selectedCustTypes].sort().join("|");
-    const branchKey = selectedBranches.length > 0 ? selectedBranches.slice().sort().join("|") : "all-branches";
-    const cacheKey = `dash_v8:${dashFrom.year}-${dashFrom.month}:${dashTo.year}-${dashTo.month}-${spFilter || "all"}-${branchKey}-${prodKey}-${cliKey}-${custKey}`;
+    // Compute the same intersection used by every query below — include it in the cache key
+    // so a scoped admin and a super admin never share a cached row, and so the page re-fetches
+    // once `adminScopeBranches` is resolved.
+    const effectiveBranchesForKey = (() => {
+      if (adminScopeBranches.length === 0) return selectedBranches;
+      if (selectedBranches.length === 0) return adminScopeBranches;
+      const allowed = new Set(adminScopeBranches);
+      return selectedBranches.filter((b) => allowed.has(b));
+    })();
+    const branchKey = effectiveBranchesForKey.length > 0
+      ? effectiveBranchesForKey.slice().sort().join("|")
+      : (adminScopeBranches.length > 0 ? "scope-empty" : "all-branches");
+    const cacheKey = `dash_v9:${dashFrom.year}-${dashFrom.month}:${dashTo.year}-${dashTo.month}-${spFilter || "all"}-${branchKey}-${prodKey}-${cliKey}-${custKey}`;
     const persistKey = `${DASH_PERSIST_PREFIX}${cacheKey}`;
 
     // ── Global session cache hit ──────────────────────────────────────────
@@ -871,7 +882,16 @@ export default function DashboardPage() {
   const fetchRankings = useCallback(async () => {
     const supabase = createClient();
     const spFilter = salespersonId || filters.selectedSalesperson;
-    const rankCacheKey = `dash_rank_v3:${dashFrom.year}-${dashFrom.month}:${dashTo.year}-${dashTo.month}:${spFilter || "all"}:${selectedBranches.length > 0 ? selectedBranches.slice().sort().join("|") : "all-branches"}:${selectedProductNames.slice().sort().join("|")}:${selectedClientIds.slice().sort().join("|")}:${selectedCustTypes.slice().sort().join("|")}`;
+    const effectiveBranchesForRankKey = (() => {
+      if (adminScopeBranches.length === 0) return selectedBranches;
+      if (selectedBranches.length === 0) return adminScopeBranches;
+      const allowed = new Set(adminScopeBranches);
+      return selectedBranches.filter((b) => allowed.has(b));
+    })();
+    const rankBranchKey = effectiveBranchesForRankKey.length > 0
+      ? effectiveBranchesForRankKey.slice().sort().join("|")
+      : (adminScopeBranches.length > 0 ? "scope-empty" : "all-branches");
+    const rankCacheKey = `dash_rank_v4:${dashFrom.year}-${dashFrom.month}:${dashTo.year}-${dashTo.month}:${spFilter || "all"}:${rankBranchKey}:${selectedProductNames.slice().sort().join("|")}:${selectedClientIds.slice().sort().join("|")}:${selectedCustTypes.slice().sort().join("|")}`;
 
     const cachedRanks = dataCache.get<{
       leaderboard: { id: string; name: string; code: string; meters: number; clients: number; revenue: number }[];
