@@ -3,6 +3,7 @@
 import { useEffect } from "react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ExcelUpload } from "@/components/admin/ExcelUpload";
+import { OdooSyncPanel } from "@/components/admin/OdooSyncPanel";
 import { UserManagement } from "@/components/admin/UserManagement";
 import { ActivityLogTable } from "@/components/admin/ActivityLogTable";
 import { SalesAccountsManager } from "@/components/admin/SalesAccountsManager";
@@ -82,8 +83,9 @@ export default function AdminPage() {
           )}
         </TabsList>
 
-        <TabsContent value="upload" className="mt-6">
+        <TabsContent value="upload" className="mt-6 space-y-6">
           <ExcelUpload locale={locale} />
+          {isSuperAdmin && <OdooSyncPanel />}
         </TabsContent>
 
         <TabsContent value="users" className="mt-6">
