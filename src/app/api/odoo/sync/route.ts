@@ -3,8 +3,10 @@ import { createClient } from "@supabase/supabase-js";
 import { createClient as createServerClient } from "@/lib/supabase/server";
 import { invalidateServerCache } from "@/lib/serverResponseCache";
 
-// Allow long-running daily sync (Vercel max 800s on Pro / 60s on Hobby).
-export const maxDuration = 800;
+// Vercel Hobby plan caps serverless functions at 300s. Daily incremental syncs
+// finish well within this; larger historical backfills should be split into
+// smaller date ranges via the manual sync UI.
+export const maxDuration = 300;
 export const dynamic = "force-dynamic";
 
 /* ──────────────────────────────────────────────────────────────────
