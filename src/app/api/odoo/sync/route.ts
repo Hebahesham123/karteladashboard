@@ -364,6 +364,35 @@ async function runSync(req: NextRequest, trigger: "cron" | "manual") {
     });
   }
 
+  /* 8a. Aggregate by unique-key tuple BEFORE upsert.
+   *     One invoice often has many lines with the same product but different
+   *     attribute_name ("COLOR: 4", "COLOR: 5", …). They share the conflict key
+   *     (client_id, product_id, month, year, salesperson_id, invoice_ref), so
+   *     sending them as separate rows triggers Postgres' "ON CONFLICT DO UPDATE
+   *     command cannot affect row a second time". We sum qty/total and merge
+   *     attributes into meter_breakdown. */
+  const mergedByKey = new Map<string, any>();
+  for (const row of orderInserts) {
+    const key = [
+      row.client_id, row.product_id, row.month, row.year,
+      row.salesperson_id ?? "", row.invoice_ref ?? "",
+    ].join("|");
+    const prev = mergedByKey.get(key);
+    if (!prev) {
+      mergedByKey.set(key, { ...row });
+      continue;
+    }
+    prev.quantity = (Number(prev.quantity) || 0) + (Number(row.quantity) || 0);
+    prev.invoice_total = (Number(prev.invoice_total) || 0) + (Number(row.invoice_total) || 0);
+    const prevMb = Array.isArray(prev.meter_breakdown) ? prev.meter_breakdown : [];
+    const rowMb = Array.isArray(row.meter_breakdown) ? row.meter_breakdown : [];
+    if (prevMb.length || rowMb.length) prev.meter_breakdown = [...prevMb, ...rowMb];
+    if (!prev.branch && row.branch) prev.branch = row.branch;
+    if (!prev.category && row.category) prev.category = row.category;
+    if (!prev.pricelist && row.pricelist) prev.pricelist = row.pricelist;
+  }
+  const mergedOrderInserts = Array.from(mergedByKey.values());
+
   /* 9. Upsert orders — same unique key used by the Excel path. */
   const CHUNK = 500;
   const CONCURRENCY = 5;
@@ -371,7 +400,7 @@ async function runSync(req: NextRequest, trigger: "cron" | "manual") {
   let orderErrors = 0;
   let firstDbError = "";
   const chunks: any[][] = [];
-  for (let i = 0; i < orderInserts.length; i += CHUNK) chunks.push(orderInserts.slice(i, i + CHUNK));
+  for (let i = 0; i < mergedOrderInserts.length; i += CHUNK) chunks.push(mergedOrderInserts.slice(i, i + CHUNK));
 
   for (let i = 0; i < chunks.length; i += CONCURRENCY) {
     const batch = chunks.slice(i, i + CONCURRENCY);
