@@ -159,8 +159,10 @@ export default function DashboardPage() {
   // now.getMonth() is 0-indexed, so without +1 it equals the previous month (1-indexed).
   const _defMonth = now.getMonth() === 0 ? 12 : now.getMonth();          // e.g., April→March
   const _defYear  = now.getMonth() === 0 ? now.getFullYear() - 1 : now.getFullYear();
-  const [dashFrom, setDashFrom] = useState({ month: _defMonth, year: _defYear });
-  const [dashTo,   setDashTo]   = useState({ month: _defMonth, year: _defYear });
+  const [dashYear, setDashYear] = useState<number>(_defYear);
+  const [dashMonths, setDashMonths] = useState<number[]>([_defMonth]);
+  const [monthPickerOpen, setMonthPickerOpen] = useState(false);
+  const [pendingMonths, setPendingMonths] = useState<number[]>([_defMonth]);
   const [spOpen,   setSpOpen]   = useState(false);
   const [prodOpen, setProdOpen] = useState(false);
   const [salespersons, setSalespersons] = useState<{ id: string; name: string }[]>([]);
@@ -305,16 +307,14 @@ export default function DashboardPage() {
     setDashError(null);
     const supabase  = createClient();
     const spFilter  = salespersonId || filters.selectedSalesperson;
-    const startVal  = dashFrom.year * 12 + dashFrom.month;
-    const endVal    = dashTo.year   * 12 + dashTo.month;
-    const isSingleMonth = startVal === endVal;
+    const monthsSorted = [...dashMonths].sort((a, b) => a - b);
+    const effectiveMonths = monthsSorted.length > 0 ? monthsSorted : [_defMonth];
+    const isSingleMonth = effectiveMonths.length === 1;
+    const singleMonth = effectiveMonths[0];
 
-    // Previous period: same length before the start of the range
-    const rangeLen   = endVal - startVal + 1; // months
-    const prevEndAbs = startVal - 1;
-    const prevStartAbs = prevEndAbs - rangeLen + 1;
-    const prevEndYear  = Math.floor(prevEndAbs / 12);
-    const prevEndMonth = prevEndAbs % 12 || 12;
+    // Previous month (only meaningful in single-month mode)
+    const prevEndYear  = isSingleMonth && singleMonth === 1 ? dashYear - 1 : dashYear;
+    const prevEndMonth = isSingleMonth ? (singleMonth === 1 ? 12 : singleMonth - 1) : 0;
 
     const prodKey = [...selectedProductNames].sort().join("|");
     const cliKey = [...selectedClientIds].sort().join("|");
@@ -331,7 +331,7 @@ export default function DashboardPage() {
     const branchKey = effectiveBranchesForKey.length > 0
       ? effectiveBranchesForKey.slice().sort().join("|")
       : (adminScopeBranches.length > 0 ? "scope-empty" : "all-branches");
-    const cacheKey = `dash_v9:${dashFrom.year}-${dashFrom.month}:${dashTo.year}-${dashTo.month}-${spFilter || "all"}-${branchKey}-${prodKey}-${cliKey}-${custKey}`;
+    const cacheKey = `dash_v9:${dashYear}-[${effectiveMonths.join(",")}]-${spFilter || "all"}-${branchKey}-${prodKey}-${cliKey}-${custKey}`;
     const persistKey = `${DASH_PERSIST_PREFIX}${cacheKey}`;
 
     // ── Global session cache hit ──────────────────────────────────────────
@@ -426,15 +426,7 @@ export default function DashboardPage() {
 
     try {
       const PAGE_SIZE = 1000;
-      const monthsInRange = (() => {
-        const out: { month: number; year: number }[] = [];
-        for (let v = startVal; v <= endVal; v += 1) {
-          const y = Math.floor(v / 12);
-          const m = v % 12 || 12;
-          out.push({ month: m, year: m === 12 ? y - 1 : y });
-        }
-        return out;
-      })();
+      const monthsInRange = effectiveMonths.map((m) => ({ month: m, year: dashYear }));
 
       // Promise wrapper that rejects after `ms` so a slow query can't freeze the page.
       const withTimeout = <T,>(p: Promise<T>, ms: number, label: string): Promise<T> =>
@@ -514,10 +506,8 @@ export default function DashboardPage() {
         return { totalM, greenC, orangeC, activeC, clientCount: byClient.size };
       };
 
-      const inRange = (m: number, y: number) => {
-        const v = y * 12 + m;
-        return v >= startVal && v <= endVal;
-      };
+      const monthSet = new Set(effectiveMonths);
+      const inRange = (m: number, y: number) => y === dashYear && monthSet.has(m);
 
       // ── 1+2. Run KPI rows, client count, order count AND trend in parallel ─
       const custTypesForFilter =
@@ -529,8 +519,7 @@ export default function DashboardPage() {
       const effectiveBranches = computeEffectiveBranches(selectedBranches);
 
       const kpiQuery = (q: any) => {
-        let qq = q.gte("year", dashFrom.year).lte("year", dashTo.year);
-        if (dashFrom.year === dashTo.year) qq = qq.gte("month", dashFrom.month).lte("month", dashTo.month);
+        let qq = q.eq("year", dashYear).in("month", effectiveMonths);
         if (spFilter) qq = qq.eq("salesperson_id", spFilter);
         if (effectiveBranches.length > 0) qq = qq.in("order_import_branch", effectiveBranches);
         qq = qq.in("customer_type", custTypesForFilter);
@@ -586,9 +575,8 @@ export default function DashboardPage() {
           let q = supabase
             .from("orders")
             .select("id", { count: "exact", head: true })
-            .gte("year", dashFrom.year)
-            .lte("year", dashTo.year);
-          if (dashFrom.year === dashTo.year) q = q.gte("month", dashFrom.month).lte("month", dashTo.month);
+            .eq("year", dashYear)
+            .in("month", effectiveMonths);
           if (spFilter) q = q.eq("salesperson_id", spFilter);
           if (effectiveBranches.length > 0) q = q.in("branch", effectiveBranches);
           if (selectedClientIds.length > 0) q = q.in("client_id", selectedClientIds);
@@ -788,8 +776,7 @@ export default function DashboardPage() {
         const m = Number(r.month);
         const y = Number(r.year);
         if (!m || !y) return;
-        const abs = y * 12 + m;
-        if (abs < startVal || abs > endVal) return;
+        if (!inRange(m, y)) return;
         const key = `${y}-${String(m).padStart(2, "0")}`;
         if (!trendAcc.has(key)) {
           trendAcc.set(key, { y, m, meters: 0, revenue: 0, orders: 0, clients: new Set() });
@@ -815,7 +802,7 @@ export default function DashboardPage() {
             }))
           : Array.from({ length: 12 }, (_, i) => ({
               monthIdx: i,
-              year: dashTo.year,
+              year: dashYear,
               meters: 0,
               clients: 0,
               orders: 0,
@@ -865,7 +852,7 @@ export default function DashboardPage() {
       setLoading(false);
       setIsRefreshing(false);
     }
-  }, [dashFrom, dashTo, filters.selectedSalesperson, salespersonId, hasLoadedOnce, selectedProductNames, selectedClientIds, selectedCustTypes, selectedBranches, adminScopeBranches]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [dashYear, dashMonths, filters.selectedSalesperson, salespersonId, hasLoadedOnce, selectedProductNames, selectedClientIds, selectedCustTypes, selectedBranches, adminScopeBranches]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => { fetchData(); }, [fetchData]);
 
@@ -891,7 +878,8 @@ export default function DashboardPage() {
     const rankBranchKey = effectiveBranchesForRankKey.length > 0
       ? effectiveBranchesForRankKey.slice().sort().join("|")
       : (adminScopeBranches.length > 0 ? "scope-empty" : "all-branches");
-    const rankCacheKey = `dash_rank_v4:${dashFrom.year}-${dashFrom.month}:${dashTo.year}-${dashTo.month}:${spFilter || "all"}:${rankBranchKey}:${selectedProductNames.slice().sort().join("|")}:${selectedClientIds.slice().sort().join("|")}:${selectedCustTypes.slice().sort().join("|")}`;
+    const rankMonthsSorted = [...dashMonths].sort((a, b) => a - b);
+    const rankCacheKey = `dash_rank_v4:${dashYear}-[${rankMonthsSorted.join(",")}]:${spFilter || "all"}:${rankBranchKey}:${selectedProductNames.slice().sort().join("|")}:${selectedClientIds.slice().sort().join("|")}:${selectedCustTypes.slice().sort().join("|")}`;
 
     const cachedRanks = dataCache.get<{
       leaderboard: { id: string; name: string; code: string; meters: number; clients: number; revenue: number }[];
@@ -908,14 +896,9 @@ export default function DashboardPage() {
 
     setRankLoading(true);
     try {
-      const startVal = dashFrom.year * 12 + dashFrom.month;
-      const endVal   = dashTo.year   * 12 + dashTo.month;
-      if (startVal > endVal) { setRankLoading(false); return; }
-
-      const inRange = (m: number, y: number) => {
-        const v = y * 12 + m;
-        return v >= startVal && v <= endVal;
-      };
+      const effectiveMonths = rankMonthsSorted.length > 0 ? rankMonthsSorted : [_defMonth];
+      const monthSet = new Set(effectiveMonths);
+      const inRange = (m: number, y: number) => y === dashYear && monthSet.has(m);
 
       const custTypesForFilter =
         selectedCustTypes.length > 0
@@ -927,8 +910,7 @@ export default function DashboardPage() {
 
       /** Same filters as main KPI `kpiQuery` so rankings match the dashboard. */
       const rankingCmmQuery = (q: any) => {
-        let qq = q.gte("year", dashFrom.year).lte("year", dashTo.year);
-        if (dashFrom.year === dashTo.year) qq = qq.gte("month", dashFrom.month).lte("month", dashTo.month);
+        let qq = q.eq("year", dashYear).in("month", effectiveMonths);
         if (spFilter) qq = qq.eq("salesperson_id", spFilter);
         if (effectiveBranchesRank.length > 0) qq = qq.in("order_import_branch", effectiveBranchesRank);
         qq = qq.in("customer_type", custTypesForFilter);
@@ -1030,13 +1012,10 @@ export default function DashboardPage() {
           let q = supabase
             .from("product_analytics")
             .select("product_name, total_meters, total_revenue, unique_clients, month, year, salesperson_id")
-            .gte("year", dashFrom.year)
-            .lte("year", dashTo.year)
+            .eq("year", dashYear)
+            .in("month", effectiveMonths)
             .gt("total_meters", 0)
             .range(from, to);
-          if (dashFrom.year === dashTo.year) {
-            q = q.gte("month", dashFrom.month).lte("month", dashTo.month);
-          }
           if (spFilter) q = q.eq("salesperson_id", spFilter);
           // No salesperson filter → sum across all salesperson rows (do NOT filter by null,
           // product_analytics aggregates per-salesperson and has no global null rows).
@@ -1105,7 +1084,7 @@ export default function DashboardPage() {
     } finally {
       setRankLoading(false);
     }
-  }, [dashFrom, dashTo, filters.selectedSalesperson, salespersonId, selectedProductNames, selectedClientIds, selectedCustTypes, selectedBranches, adminScopeBranches]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [dashYear, dashMonths, filters.selectedSalesperson, salespersonId, selectedProductNames, selectedClientIds, selectedCustTypes, selectedBranches, adminScopeBranches]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => { fetchRankings(); }, [fetchRankings]);
 
@@ -1114,7 +1093,8 @@ export default function DashboardPage() {
   const uniqueClients  = activeClientCount;
   const noOrderClients = redCount;
   const metersGrowth   = calculateGrowthRate(totalMeters, prevMeters);
-  const isDashSingleMonth = dashFrom.year === dashTo.year && dashFrom.month === dashTo.month;
+  const isDashSingleMonth = dashMonths.length === 1;
+  const latestSelectedMonth = dashMonths.length > 0 ? Math.max(...dashMonths) : _defMonth;
   const revenueGrowth = calculateGrowthRate(totalRevenue, prevRevenue);
   const clientsKpiDisplay = monthlyClientCount || uniqueClients;
   const clientsGrowth = calculateGrowthRate(clientsKpiDisplay, prevMonthlyClients);
@@ -1349,37 +1329,123 @@ export default function DashboardPage() {
 
           <div className="w-px h-4 md:h-5 bg-border mx-0.5 md:mx-1" />
 
-          {/* FROM */}
-          <span className="text-[10px] md:text-xs text-muted-foreground shrink-0">{isRTL ? "من" : "From"}</span>
-          <Select value={dashFrom.month.toString()} onValueChange={(v) => setDashFrom(p => ({ ...p, month: +v }))}>
-            <SelectTrigger className="w-[4.5rem] md:w-28 h-7 md:h-8 text-[10px] md:text-xs px-2"><SelectValue /></SelectTrigger>
-            <SelectContent>
-              {(isRTL ? MONTHS_AR : MONTHS_EN).map((m, i) => (
-                <SelectItem key={i + 1} value={(i + 1).toString()}>{m}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          <Select value={dashFrom.year.toString()} onValueChange={(v) => setDashFrom(p => ({ ...p, year: +v }))}>
-            <SelectTrigger className="w-[3.25rem] md:w-20 h-7 md:h-8 text-[10px] md:text-xs px-1.5 md:px-2"><SelectValue /></SelectTrigger>
-            <SelectContent>
-              {dashYears.map((y) => <SelectItem key={y} value={y.toString()}>{y}</SelectItem>)}
-            </SelectContent>
-          </Select>
+          {/* Months (multi-select with Apply) */}
+          <Popover
+            open={monthPickerOpen}
+            onOpenChange={(open) => {
+              if (open) setPendingMonths(dashMonths);
+              setMonthPickerOpen(open);
+            }}
+          >
+            <PopoverTrigger asChild>
+              <Button
+                variant="outline"
+                role="combobox"
+                aria-expanded={monthPickerOpen}
+                className="w-32 md:w-52 h-7 md:h-8 text-[10px] md:text-xs justify-between font-normal shrink-0 px-2"
+              >
+                <span className="truncate">
+                  {dashMonths.length === 0
+                    ? (isRTL ? "اختر شهور" : "Select months")
+                    : dashMonths.length === 12
+                      ? (isRTL ? "كل الشهور" : "All months")
+                      : dashMonths.length <= 3
+                        ? [...dashMonths].sort((a, b) => a - b).map((m) => (isRTL ? MONTHS_AR : MONTHS_EN)[m - 1]).join(isRTL ? "، " : ", ")
+                        : `${dashMonths.length} ${isRTL ? "شهور" : "months"}`}
+                </span>
+                <ChevronsUpDown className="h-3.5 w-3.5 shrink-0 opacity-50 ml-1" />
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent className="w-64 p-2" align="start">
+              {/* Summary of pending selection */}
+              <div className="mb-2 rounded-md bg-muted/60 px-2 py-1.5 text-[11px] leading-snug">
+                <div className="text-muted-foreground mb-0.5">
+                  {isRTL ? "الشهور المختارة" : "Selected months"}
+                </div>
+                <div className="font-medium text-foreground break-words">
+                  {pendingMonths.length === 0
+                    ? (isRTL ? "لا يوجد" : "None")
+                    : pendingMonths.length === 12
+                      ? (isRTL ? "كل الشهور" : "All months")
+                      : [...pendingMonths]
+                          .sort((a, b) => a - b)
+                          .map((m) => (isRTL ? MONTHS_AR : MONTHS_EN)[m - 1])
+                          .join(isRTL ? "، " : ", ")}
+                  {pendingMonths.length > 0 && <span className="text-muted-foreground"> · {dashYear}</span>}
+                </div>
+              </div>
 
-          <span className="text-muted-foreground text-[10px] md:text-xs shrink-0">→</span>
+              <div className="flex items-center justify-between gap-2 mb-1.5">
+                <button
+                  type="button"
+                  className="text-[11px] text-primary hover:underline"
+                  onClick={() => setPendingMonths(Array.from({ length: 12 }, (_, i) => i + 1))}
+                >
+                  {isRTL ? "تحديد الكل" : "Select all"}
+                </button>
+                <button
+                  type="button"
+                  className="text-[11px] text-muted-foreground hover:underline"
+                  onClick={() => setPendingMonths([])}
+                >
+                  {isRTL ? "مسح" : "Clear"}
+                </button>
+              </div>
+              <div className="max-h-56 overflow-y-auto space-y-0.5">
+                {(isRTL ? MONTHS_AR : MONTHS_EN).map((label, i) => {
+                  const m = i + 1;
+                  const checked = pendingMonths.includes(m);
+                  return (
+                    <label
+                      key={m}
+                      className="flex items-center gap-2 px-2 py-1.5 rounded text-xs cursor-pointer hover:bg-muted"
+                    >
+                      <input
+                        type="checkbox"
+                        className="h-3.5 w-3.5 accent-primary"
+                        checked={checked}
+                        onChange={() => {
+                          setPendingMonths((prev) =>
+                            prev.includes(m) ? prev.filter((x) => x !== m) : [...prev, m].sort((a, b) => a - b)
+                          );
+                        }}
+                      />
+                      <span className={checked ? "font-medium" : ""}>{label}</span>
+                    </label>
+                  );
+                })}
+              </div>
 
-          {/* TO */}
-          <span className="text-[10px] md:text-xs text-muted-foreground shrink-0">{isRTL ? "إلى" : "To"}</span>
-          <Select value={dashTo.month.toString()} onValueChange={(v) => setDashTo(p => ({ ...p, month: +v }))}>
-            <SelectTrigger className="w-[4.5rem] md:w-28 h-7 md:h-8 text-[10px] md:text-xs px-2"><SelectValue /></SelectTrigger>
-            <SelectContent>
-              {(isRTL ? MONTHS_AR : MONTHS_EN).map((m, i) => (
-                <SelectItem key={i + 1} value={(i + 1).toString()}>{m}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          <Select value={dashTo.year.toString()} onValueChange={(v) => setDashTo(p => ({ ...p, year: +v }))}>
-            <SelectTrigger className="w-[3.25rem] md:w-20 h-7 md:h-8 text-[10px] md:text-xs px-1.5 md:px-2"><SelectValue /></SelectTrigger>
+              {/* Apply / Cancel */}
+              <div className="mt-2 pt-2 border-t border-border flex items-center justify-end gap-2">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 text-xs"
+                  onClick={() => setMonthPickerOpen(false)}
+                >
+                  {isRTL ? "إلغاء" : "Cancel"}
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  className="h-7 text-xs"
+                  disabled={pendingMonths.length === 0}
+                  onClick={() => {
+                    setDashMonths(pendingMonths);
+                    setMonthPickerOpen(false);
+                  }}
+                >
+                  {isRTL ? "تطبيق" : "Apply"}
+                </Button>
+              </div>
+            </PopoverContent>
+          </Popover>
+
+          {/* Year (single) */}
+          <Select value={dashYear.toString()} onValueChange={(v) => setDashYear(+v)}>
+            <SelectTrigger className="w-[3.5rem] md:w-20 h-7 md:h-8 text-[10px] md:text-xs px-1.5 md:px-2"><SelectValue /></SelectTrigger>
             <SelectContent>
               {dashYears.map((y) => <SelectItem key={y} value={y.toString()}>{y}</SelectItem>)}
             </SelectContent>
@@ -1611,13 +1677,12 @@ export default function DashboardPage() {
           </Popover>
 
           {/* Active filters badge + clear */}
-          {(dashFrom.year !== _defYear || dashFrom.month !== _defMonth ||
-            dashTo.year  !== _defYear || dashTo.month  !== _defMonth ||
+          {(dashYear !== _defYear || dashMonths.length !== 1 || dashMonths[0] !== _defMonth ||
             filters.selectedSalesperson || selectedBranches.length > 0 || selectedProductNames.length > 0 || selectedClientIds.length > 0 || selectedCustTypes.length > 0) && (
             <Button variant="ghost" size="sm" className="h-7 px-2 text-xs gap-1 text-muted-foreground hover:text-destructive shrink-0"
               onClick={() => {
-                setDashFrom({ month: _defMonth, year: _defYear });
-                setDashTo({ month: _defMonth, year: _defYear });
+                setDashYear(_defYear);
+                setDashMonths([_defMonth]);
                 setFilter("selectedSalesperson", null);
                 setSelectedBranches([]);
                 setSelectedProductNames([]);
@@ -1642,7 +1707,7 @@ export default function DashboardPage() {
 
       {/* Multi-month notice — warn user that dashboard aggregates across months
           while the clients table is always per-month */}
-      {(dashFrom.year !== dashTo.year || dashFrom.month !== dashTo.month) && (
+      {dashMonths.length > 1 && (
         <div className="rounded-lg md:rounded-xl border border-amber-200 bg-amber-50 dark:bg-amber-950/20 dark:border-amber-800 px-2.5 py-1.5 md:px-4 md:py-2.5 text-[10px] md:text-xs text-amber-700 dark:text-amber-300 flex items-start gap-1.5 md:gap-2 leading-snug">
           <span className="shrink-0 mt-0.5">⚠️</span>
           <span>
@@ -1691,7 +1756,7 @@ export default function DashboardPage() {
         </button>
 
         {/* Clients */}
-        <button type="button" onClick={() => { dataCache.invalidate("clients_v16:"); setFilter("selectedMonth", dashTo.month); setFilter("selectedYear", dashTo.year); setFilter("selectedLevel", null); router.push("/clients"); }}
+        <button type="button" onClick={() => { dataCache.invalidate("clients_v16:"); setFilter("selectedMonth", latestSelectedMonth); setFilter("selectedYear", dashYear); setFilter("selectedLevel", null); router.push("/clients"); }}
           className="rounded-xl md:rounded-2xl border border-green-200 dark:border-green-800 bg-gradient-to-br from-green-50 to-green-100/50 dark:from-green-950/30 dark:to-green-900/10 p-2.5 md:p-4 text-start hover:shadow-md transition-all group min-w-0">
           <div className="flex items-start justify-between gap-1 mb-1 md:mb-2">
             <span className="text-[10px] md:text-xs font-semibold text-green-600 dark:text-green-400 leading-tight line-clamp-2">{isRTL ? "عملاء نشطون" : "Active Clients"}</span>
@@ -1723,7 +1788,7 @@ export default function DashboardPage() {
 
       {/* 4 KPI Cards side-by-side */}
       {(() => {
-        const isSingleM = dashFrom.year === dashTo.year && dashFrom.month === dashTo.month;
+        const isSingleM = dashMonths.length === 1;
         const pctLabel = isRTL
           ? (isSingleM ? "من الشهر" : "من الفترة")
           : (isSingleM ? "of month"  : "of period");
@@ -1735,17 +1800,12 @@ export default function DashboardPage() {
         const redMom = calculateGrowthRate(noOrderClients, prevRedLevel);
         const dormantMom = calculateGrowthRate(dormantThisMonth, prevDormant);
 
-        // When navigating to clients, sync the store's month/year to dashTo
-        // (end of range).  For single-month selections dashFrom = dashTo so
-        // this is always exact.  For multi-month ranges the last month in the
-        // range is where the most recent data lives (e.g., March when the
-        // range is January → March).
         const goClients = (level: string) => {
           // Clear cached clients data for the target month so the page always loads fresh
           dataCache.invalidate(`clients_v16:`);
           setFilter("selectedLevel",  level);
-          setFilter("selectedMonth",  dashTo.month);
-          setFilter("selectedYear",   dashTo.year);
+          setFilter("selectedMonth",  latestSelectedMonth);
+          setFilter("selectedYear",   dashYear);
           router.push("/clients");
         };
 
@@ -1932,8 +1992,13 @@ export default function DashboardPage() {
           <div className="flex items-center gap-1.5 md:gap-2 min-w-0 flex-wrap">
             <span className="text-sm md:text-base font-bold text-foreground">{isRTL ? "الترتيب" : "Rankings"}</span>
             <span className="text-[10px] md:text-xs px-2 py-0.5 md:px-2.5 md:py-1 rounded-full bg-primary/10 text-primary border border-primary/20 font-semibold leading-tight">
-              {(isRTL ? MONTHS_AR : MONTHS_EN)[dashFrom.month - 1]} {dashFrom.year}
-              {(dashFrom.month !== dashTo.month || dashFrom.year !== dashTo.year) && ` → ${(isRTL ? MONTHS_AR : MONTHS_EN)[dashTo.month - 1]} ${dashTo.year}`}
+              {dashMonths.length === 0
+                ? (isRTL ? "لم يتم اختيار شهور" : "No months selected")
+                : dashMonths.length === 12
+                  ? `${isRTL ? "كل الشهور" : "All months"} ${dashYear}`
+                  : dashMonths.length <= 3
+                    ? `${[...dashMonths].sort((a, b) => a - b).map((m) => (isRTL ? MONTHS_AR : MONTHS_EN)[m - 1]).join(isRTL ? "، " : ", ")} ${dashYear}`
+                    : `${dashMonths.length} ${isRTL ? "شهور" : "months"} ${dashYear}`}
             </span>
           </div>
           {rankLoading && (
