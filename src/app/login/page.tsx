@@ -58,6 +58,17 @@ export default function LoginPage() {
         role = profile?.role ?? "admin";
       }
 
+      // Record login event (non-blocking — never fail the sign-in over this).
+      try {
+        await fetch("/api/auth-events", {
+          method: "POST",
+          credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ event: "login" }),
+          keepalive: true,
+        });
+      } catch { /* non-fatal */ }
+
       // Hard navigation so the server-side cookies are read on the next page load.
       // router.push() keeps the same JS bundle, so API routes get a stale empty cookie jar
       // and return 401 until the user manually refreshes.

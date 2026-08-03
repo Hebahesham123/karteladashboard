@@ -6,6 +6,7 @@ import { ExcelUpload } from "@/components/admin/ExcelUpload";
 import { OdooSyncPanel } from "@/components/admin/OdooSyncPanel";
 import { UserManagement } from "@/components/admin/UserManagement";
 import { ActivityLogTable } from "@/components/admin/ActivityLogTable";
+import { AuthLogsPanel } from "@/components/admin/AuthLogsPanel";
 import { SalesAccountsManager } from "@/components/admin/SalesAccountsManager";
 import { BranchAreaManagers } from "@/components/admin/BranchAreaManagers";
 import { useStore } from "@/store/useStore";
@@ -52,9 +53,12 @@ export default function AdminPage() {
   return (
     <div className="space-y-6">
       <PageBack locale={locale} fallbackHref="/dashboard" />
-      <div>
-        <h1 className="text-2xl font-bold">{t.title}</h1>
-        <p className="text-muted-foreground text-sm mt-1">{t.subtitle}</p>
+      <div className="flex items-start justify-between gap-3 flex-wrap">
+        <div>
+          <h1 className="text-2xl font-bold">{t.title}</h1>
+          <p className="text-muted-foreground text-sm mt-1">{t.subtitle}</p>
+        </div>
+        <AuthLogsPanel locale={locale} />
       </div>
 
       <Tabs defaultValue="upload">

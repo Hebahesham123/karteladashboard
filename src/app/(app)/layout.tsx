@@ -132,6 +132,16 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   };
 
   const handleSignOut = async () => {
+    // Record logout BEFORE signOut clears the session cookie the API route needs.
+    try {
+      await fetch("/api/auth-events", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ event: "logout" }),
+        keepalive: true,
+      });
+    } catch { /* non-fatal */ }
     const supabase = createClient();
     await supabase.auth.signOut();
     setCurrentUser(null);
