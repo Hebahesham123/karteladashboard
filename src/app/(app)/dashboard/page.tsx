@@ -1720,27 +1720,6 @@ export default function DashboardPage() {
 
       {/* ── 4 Main KPI Summary Cards ── */}
       <div className="grid grid-cols-2 xl:grid-cols-4 gap-2 md:gap-3">
-        {/* Kartela + clients + meters (first card) */}
-        <button
-          type="button"
-          onClick={() => router.push("/kartela-analysis")}
-          className="rounded-xl md:rounded-2xl border border-cyan-200 dark:border-cyan-800 bg-gradient-to-br from-cyan-50 to-cyan-100/50 dark:from-cyan-950/30 dark:to-cyan-900/10 p-2.5 md:p-4 text-start hover:shadow-md transition-all group min-w-0"
-        >
-          <div className="flex items-start justify-between gap-1 mb-1 md:mb-2">
-            <span className="text-[10px] md:text-xs font-semibold text-cyan-600 dark:text-cyan-400 leading-tight line-clamp-2">
-              {isRTL ? "الكارتيلا + العملاء + الأمتار" : "Kartela + clients + meters"}
-            </span>
-            <div className="h-6 w-6 md:h-8 md:w-8 rounded-lg md:rounded-xl bg-cyan-500/15 flex items-center justify-center group-hover:bg-cyan-500/25 transition-colors shrink-0">
-              <CheckCircle className="h-3 w-3 md:h-4 md:w-4 text-cyan-600 dark:text-cyan-400" />
-            </div>
-          </div>
-          <div className="space-y-0.5 text-[11px] md:text-xs text-muted-foreground">
-            <div className="flex items-center justify-between"><span>{isRTL ? "كارتيلا" : "Kartela"}</span><span className="font-bold text-foreground tabular-nums">{formatNumber(kartelaTotal)}</span></div>
-            <div className="flex items-center justify-between"><span>{isRTL ? "عملاء" : "Clients"}</span><span className="font-bold text-foreground tabular-nums">{formatNumber(kartelaClients)}</span></div>
-            <div className="flex items-center justify-between"><span>{isRTL ? "أمتار" : "Meters"}</span><span className="font-bold text-foreground tabular-nums">{formatNumber(totalMeters)}m</span></div>
-          </div>
-        </button>
-
         {/* Revenue */}
         <button type="button" onClick={() => router.push("/clients")}
           className="rounded-xl md:rounded-2xl border border-amber-200 dark:border-amber-800 bg-gradient-to-br from-amber-50 to-amber-100/50 dark:from-amber-950/30 dark:to-amber-900/10 p-2.5 md:p-4 text-start hover:shadow-md transition-all group min-w-0">

@@ -13,6 +13,7 @@ const DEFAULT_PASSWORD = "123456";
 const SUPER_ADMINS: SuperAdminSeed[] = [
   { full_name: "Heba Hesham", email: "hebahesham102@gmail.com" },
   { full_name: "Mohamed Zayed", email: "mohamed.zayed@nstextile-eg.com" },
+  { full_name: "Deeb", email: "deeb@gmail.com" },
 ];
 
 function getServiceClient() {
