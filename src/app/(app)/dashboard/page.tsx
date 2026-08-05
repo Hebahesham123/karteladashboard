@@ -96,7 +96,7 @@ interface DrillDownData {
   items: any[];
 }
 
-const DASH_PERSIST_PREFIX = "dash_boot_v1:";
+const DASH_PERSIST_PREFIX = "dash_boot_v2:";
 
 export default function DashboardPage() {
   const router = useRouter();
@@ -293,15 +293,50 @@ export default function DashboardPage() {
 
   const [rankLoading, setRankLoading] = useState(false);
 
+  /**
+   * Total clients in scope — the Dormant denominator.
+   *
+   * Must NOT be read straight from `clients` in the browser: the scoped-admin
+   * RLS policy runs an EXISTS over `orders` per row, which returns 0 for
+   * branch-scoped admins (and takes ~50s), so Dormant collapsed to
+   * max(0, 0 − activeClients) = 0 for every non-super admin. The API route
+   * applies the same scope server-side with the service role.
+   * Returns null when the total is unknown so callers can keep the last good value.
+   */
+  const fetchScopedClientTotal = useCallback(
+    async (spFilter: string | null, branches: string[], types: string[]): Promise<number | null> => {
+      const params = new URLSearchParams();
+      if (spFilter) params.set("salesperson", spFilter);
+      if (branches.length > 0) params.set("branches", branches.join(","));
+      if (types.length > 0) params.set("types", types.join(","));
+      try {
+        const res = await fetch(`/api/clients/total-count?${params.toString()}`, { credentials: "include" });
+        const json = (await res.json()) as { total?: number; error?: string };
+        if (!res.ok || typeof json.total !== "number") return null;
+        return json.total;
+      } catch {
+        return null;
+      }
+    },
+    [],
+  );
+
+  // Last successfully resolved total — used so a failed lookup never wipes the tile to 0.
+  const lastGoodTotalRef = useRef<number>(0);
+
   // Always use exact total clients from table (no 1000-row cap)
   useEffect(() => {
-    const supabase = createClient();
-    supabase
-      .from("clients")
-      .select("id", { count: "exact", head: true })
-      .in("customer_type", [...ALLOWED_CUSTOMER_TYPES])
-      .then((res: any) => setTotalClientCount(res?.count || 0));
-  }, []);
+    let cancelled = false;
+    (async () => {
+      const total = await fetchScopedClientTotal(null, [], [...ALLOWED_CUSTOMER_TYPES]);
+      if (cancelled || total === null || total <= 0) return;
+      lastGoodTotalRef.current = total;
+      setTotalClientCount(total);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [fetchScopedClientTotal]);
 
   const fetchData = useCallback(async (forceRefresh = false) => {
     setDashError(null);
@@ -331,7 +366,7 @@ export default function DashboardPage() {
     const branchKey = effectiveBranchesForKey.length > 0
       ? effectiveBranchesForKey.slice().sort().join("|")
       : (adminScopeBranches.length > 0 ? "scope-empty" : "all-branches");
-    const cacheKey = `dash_v9:${dashYear}-[${effectiveMonths.join(",")}]-${spFilter || "all"}-${branchKey}-${prodKey}-${cliKey}-${custKey}`;
+    const cacheKey = `dash_v10:${dashYear}-[${effectiveMonths.join(",")}]-${spFilter || "all"}-${branchKey}-${prodKey}-${cliKey}-${custKey}`;
     const persistKey = `${DASH_PERSIST_PREFIX}${cacheKey}`;
 
     // ── Global session cache hit ──────────────────────────────────────────
@@ -348,7 +383,10 @@ export default function DashboardPage() {
       setRedCount(globalCached.redC);
       setActiveClientCount(globalCached.activeC);
       setMonthlyClientCount(globalCached.monthlyC || globalCached.activeC);
-      setTotalClientCount(globalCached.totalClients);
+      if (globalCached.totalClients > 0) {
+        lastGoodTotalRef.current = globalCached.totalClients;
+        setTotalClientCount(globalCached.totalClients);
+      }
       setPrevMeters(globalCached.prevM);
       setPrevRevenue(globalCached.prevR ?? 0);
       setPrevOrderCount(globalCached.prevO ?? 0);
@@ -387,7 +425,10 @@ export default function DashboardPage() {
             setRedCount(persisted.redC ?? 0);
             setActiveClientCount(persisted.activeC ?? 0);
             setMonthlyClientCount(persisted.monthlyC || persisted.activeC || 0);
-            setTotalClientCount(persisted.totalClients ?? 0);
+            if ((persisted.totalClients ?? 0) > 0) {
+              lastGoodTotalRef.current = persisted.totalClients;
+              setTotalClientCount(persisted.totalClients);
+            }
             setPrevMeters(persisted.prevM ?? 0);
             setPrevRevenue(persisted.prevR ?? 0);
             setPrevOrderCount(persisted.prevO ?? 0);
@@ -563,13 +604,12 @@ export default function DashboardPage() {
       ] = await Promise.all([
         // KPI rows from client_monthly_metrics (with timeout fallback)
         getKpiRows(),
-        // Total client count (head only — no rows transferred)
-        safeCountOnly(() => {
-          let q = supabase.from("clients").select("id", { count: "exact", head: true }).in("customer_type", custTypesForFilter);
-          if (spFilter) q = q.eq("salesperson_id", spFilter);
-          if (selectedClientIds.length > 0) q = q.in("id", selectedClientIds);
-          return q;
-        }),
+        // Total clients in scope — resolved server-side (RLS on `clients` returns
+        // 0 for branch-scoped admins, which used to zero out the Dormant tile).
+        // When the client picker is used, the picked clients ARE the universe.
+        selectedClientIds.length > 0
+          ? Promise.resolve(selectedClientIds.length)
+          : fetchScopedClientTotal(spFilter || null, effectiveBranches, custTypesForFilter),
         // Order count for the selected period (client filter only; product filter uses KPI row sum below)
         safeCountOnly(() => {
           let q = supabase
@@ -585,8 +625,12 @@ export default function DashboardPage() {
       ]);
 
       let kpiRows = kpiRowsRaw;
-      const denominatorCount = Number(countResult) || 0;
-      setTotalClientCount(denominatorCount);
+      // countResult is null when the lookup failed — fall back to the last good
+      // total instead of writing 0, which would silently blank the Dormant tile.
+      const resolvedTotal = typeof countResult === "number" && countResult > 0 ? countResult : null;
+      if (resolvedTotal !== null) lastGoodTotalRef.current = resolvedTotal;
+      const denominatorCount = resolvedTotal ?? lastGoodTotalRef.current;
+      if (denominatorCount > 0) setTotalClientCount(denominatorCount);
       let orderCountFinal = Number(orderCountRes) || 0;
 
       // Client-side guard for exact boundaries (needed for cross-year ranges)
@@ -852,7 +896,7 @@ export default function DashboardPage() {
       setLoading(false);
       setIsRefreshing(false);
     }
-  }, [dashYear, dashMonths, filters.selectedSalesperson, salespersonId, hasLoadedOnce, selectedProductNames, selectedClientIds, selectedCustTypes, selectedBranches, adminScopeBranches]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [dashYear, dashMonths, filters.selectedSalesperson, salespersonId, hasLoadedOnce, selectedProductNames, selectedClientIds, selectedCustTypes, selectedBranches, adminScopeBranches, fetchScopedClientTotal]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => { fetchData(); }, [fetchData]);
 
@@ -1720,6 +1764,32 @@ export default function DashboardPage() {
 
       {/* ── 4 Main KPI Summary Cards ── */}
       <div className="grid grid-cols-2 xl:grid-cols-4 gap-2 md:gap-3">
+        {/* Kartela: units sold + how many clients bought one */}
+        <button
+          type="button"
+          onClick={() => router.push("/kartela-analysis")}
+          className="rounded-xl md:rounded-2xl border border-cyan-200 dark:border-cyan-800 bg-gradient-to-br from-cyan-50 to-cyan-100/50 dark:from-cyan-950/30 dark:to-cyan-900/10 p-2.5 md:p-4 text-start hover:shadow-md transition-all group min-w-0"
+        >
+          <div className="flex items-start justify-between gap-1 mb-1 md:mb-2">
+            <span className="text-[10px] md:text-xs font-semibold text-cyan-600 dark:text-cyan-400 leading-tight line-clamp-2">
+              {isRTL ? "الكارتيلا" : "Kartela"}
+            </span>
+            <div className="h-6 w-6 md:h-8 md:w-8 rounded-lg md:rounded-xl bg-cyan-500/15 flex items-center justify-center group-hover:bg-cyan-500/25 transition-colors shrink-0">
+              <CheckCircle className="h-3 w-3 md:h-4 md:w-4 text-cyan-600 dark:text-cyan-400" />
+            </div>
+          </div>
+          <div className="text-lg md:text-2xl font-bold tabular-nums text-foreground leading-tight">{formatNumber(kartelaTotal)}</div>
+          <div className="text-[9px] md:text-[11px] text-muted-foreground mt-0.5 leading-tight">
+            {isRTL ? "كارتيلا في الفترة المحددة" : "kartela in selected period"}
+          </div>
+          <div className="mt-1.5 pt-1.5 border-t border-cyan-200/70 dark:border-cyan-800/70 flex items-center justify-between gap-1">
+            <span className="text-[9px] md:text-[11px] text-muted-foreground leading-tight">
+              {isRTL ? "عملاء اشتروا كارتيلا" : "Clients who bought"}
+            </span>
+            <span className="text-xs md:text-sm font-bold tabular-nums text-foreground">{formatNumber(kartelaClients)}</span>
+          </div>
+        </button>
+
         {/* Revenue */}
         <button type="button" onClick={() => router.push("/clients")}
           className="rounded-xl md:rounded-2xl border border-amber-200 dark:border-amber-800 bg-gradient-to-br from-amber-50 to-amber-100/50 dark:from-amber-950/30 dark:to-amber-900/10 p-2.5 md:p-4 text-start hover:shadow-md transition-all group min-w-0">
