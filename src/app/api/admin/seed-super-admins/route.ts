@@ -14,6 +14,8 @@ const SUPER_ADMINS: SuperAdminSeed[] = [
   { full_name: "Heba Hesham", email: "hebahesham102@gmail.com" },
   { full_name: "Mohamed Zayed", email: "mohamed.zayed@nstextile-eg.com" },
   { full_name: "Deeb", email: "deeb@gmail.com" },
+  { full_name: "Hany Mousa", email: "hany.mousa@nstextile-eg.com" },
+  { full_name: "M. Elwan", email: "m.elwan@nstextile-eg.com" },
 ];
 
 function getServiceClient() {
@@ -26,9 +28,9 @@ function getServiceClient() {
 }
 
 export async function POST() {
-  // Open route: the seed list is hardcoded to two specific emails, so this
-  // endpoint can only ever promote Heba and Zayed. Anyone hitting it just
-  // (re)resets their passwords + super-admin flag to known values.
+  // Open route: the seed list is hardcoded, so this endpoint can only ever
+  // promote the accounts in SUPER_ADMINS. Anyone hitting it just (re)resets
+  // their passwords + super-admin flag to known values.
   const admin = getServiceClient();
   if (!admin) {
     return NextResponse.json({ error: "Missing server Supabase env" }, { status: 500 });

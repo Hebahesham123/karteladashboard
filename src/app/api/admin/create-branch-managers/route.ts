@@ -54,7 +54,7 @@ const BRANCH_MANAGERS: BranchManagerSeed[] = [
   { full_name: "Khaled Mohamed Elsayed Abdelmoneim", full_name_ar: "خالد محمد السيد عبدالمنعم", email: "khaled.abdelmoneim@gmail.com", branch: "Hosery", title: "مدير فرع" },
   { full_name: "Hassan Abdelaziz Hassan Ali", full_name_ar: "حسن عبدالعزيز حسن علي", email: "hassan.abdelaziz@gmail.com", branch: "Mall of egypt", title: "مدير فرع" },
   { full_name: "Sameh Saeed Othman Othman", full_name_ar: "سامح سعيد عثمان عثمان", email: "sameh.othman@gmail.com", branch: "Trivium zayed", title: "مدير فرع" },
-  { full_name: "Eslam Mohamed Gamal Abdelfattah Sherif", full_name_ar: "اسلام محمد جمال عبدالفتاح شريف", email: "eslam.gamal@gmail.com", branch: "Nasr city", title: "مدير فرع" },
+  { full_name: "Eslam Mohamed Gamal Abdelfattah Sherif", full_name_ar: "اسلام محمد جمال عبدالفتاح شريف", email: "eslam.gamal@gmail.com", branch: "Azhar 2", title: "مدير فرع" },
   { full_name: "Samir Mohamed Abdelmoneim Mahmoud Klib", full_name_ar: "سمير محمد عبدالمنعم محمود كليب", email: "samir.klib@gmail.com", branch: "Tanta", title: "مدير فرع" },
   { full_name: "Hany Khalil Yacoub Khalil", full_name_ar: "هاني خليل يعقوب خليل", email: "hany.khalil@gmail.com", branch: "Azhar 2", title: "نائب مدير فرع" },
 ];

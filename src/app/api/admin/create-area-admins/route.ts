@@ -37,7 +37,14 @@ const AREA_ADMINS: AreaAdminSeed[] = [
   {
     full_name: "Youssef Ramzy",
     email: "youssef.ramzy@nstextile-eg.com",
-    branches: ["Southgate", "Madinaty", "Mivida"],
+    branches: [
+      "Southgate",
+      "Madinaty",
+      "Mivida",
+      "Mall of arabia",
+      "Mall of egypt",
+      "Trivium zayed",
+    ],
   },
   {
     full_name: "Ahmed Magdy Bedir",
