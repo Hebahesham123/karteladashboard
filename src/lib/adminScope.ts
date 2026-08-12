@@ -1,3 +1,5 @@
+import { canonicalizeBranch, expandBranchScopeForFilter } from "@/lib/branchAliases";
+
 export type AdminScope = {
   isSuperAdmin: boolean;
   salespersonIds: string[];
@@ -98,8 +100,10 @@ export async function resolveAdminScope(db: any, userId: string): Promise<AdminS
   }
 
   const ids = new Set<string>();
-  // Use exact match (branch IN actual) — aliases already expand to the literal Arabic names in orders.branch.
-  const actualList = Array.from(actualBranches);
+  // Use exact match (branch IN actual). `branch_aliases` is only an override —
+  // run everything through the built-in map too, so an admin whose scope has no
+  // alias row still matches the Arabic values actually stored in orders.branch.
+  const actualList = expandBranchScopeForFilter(Array.from(actualBranches));
   if (actualList.length > 0) {
     const PAGE = 5000;
     let from = 0;
@@ -180,15 +184,23 @@ export async function resolveAdminBranchScope(db: any, userId: string): Promise<
       const mapped = aliasMap.get(alias.toLowerCase());
       if (mapped && mapped.length > 0) {
         for (const m of mapped) expanded.add(m);
-      } else {
-        // No alias mapping — assume the value is already an actual branch.
-        expanded.add(alias);
       }
+      // Always keep the alias itself — the built-in map resolves it even when
+      // branch_aliases has no row for it.
+      expanded.add(alias);
     }
   } catch {
     // If branch_aliases table cannot be read, fall back to raw values so we never silently lock the user out.
     for (const a of aliasNames) expanded.add(a);
   }
 
-  return { branches: Array.from(expanded) };
+  // Return CANONICAL names. Callers either compare against other canonical
+  // names (branch pickers, /api/branches) or expand back to every stored
+  // spelling with expandBranchScopeForFilter before querying orders.branch.
+  const canonical = new Set<string>();
+  for (const v of Array.from(expanded)) {
+    const c = canonicalizeBranch(v);
+    if (c) canonical.add(c);
+  }
+  return { branches: Array.from(canonical) };
 }

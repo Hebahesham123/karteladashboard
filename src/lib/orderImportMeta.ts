@@ -1,5 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { isKartelaProductName } from "@/lib/kartelaProduct";
+import { expandBranchScopeForFilter } from "@/lib/branchAliases";
 
 function productNameFromJoin(row: { products?: unknown }): string | null {
   const p = row.products as { name?: string } | { name?: string }[] | null | undefined;
@@ -429,7 +430,9 @@ export async function fetchClientLatestOrderLineFields(
         q = q.eq("month", opts.month).eq("year", opts.year);
       }
       if (opts?.allowedBranches && opts.allowedBranches.length > 0) {
-        q = q.in("branch", opts.allowedBranches);
+        // Callers pass canonical names; orders.branch holds the raw uploaded
+        // spelling, so expand before comparing or this matches nothing.
+        q = q.in("branch", expandBranchScopeForFilter(opts.allowedBranches));
       }
 
       const { data, error } = await q;

@@ -4,6 +4,7 @@ import { createClient } from "@supabase/supabase-js";
 import { getOrSetServerCache, invalidateServerCache } from "@/lib/serverResponseCache";
 import { isKartelaProductName, kartelaMetersFromMeterBreakdown } from "@/lib/kartelaProduct";
 import { canAccessSalesperson, filterSalespersonsByScope, resolveAdminBranchScope, resolveAdminScope } from "@/lib/adminScope";
+import { expandBranchScopeForFilter } from "@/lib/branchAliases";
 
 function getServiceClient() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -44,18 +45,18 @@ export async function GET(req: NextRequest) {
   const scopedBranches = (branchScope.branches ?? []).map((b) => String(b).trim()).filter(Boolean);
   const scopeSalespersonIds = new Set<string>(scope.salespersonIds);
   if (!scope.isSuperAdmin && scopeSalespersonIds.size === 0 && scopedBranches.length > 0) {
-    for (const branch of scopedBranches) {
-      const { data, error } = await db
-        .from("orders")
-        .select("salesperson_id")
-        .ilike("branch", `%${branch}%`)
-        .not("salesperson_id", "is", null)
-        .limit(5000);
-      if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-      for (const row of data ?? []) {
-        const sid = String((row as { salesperson_id?: string | null }).salesperson_id ?? "").trim();
-        if (sid) scopeSalespersonIds.add(sid);
-      }
+    // Match on the real values in orders.branch. A LIKE on the canonical English
+    // name ("Faisel") never matches the Arabic string the upload stored.
+    const { data, error } = await db
+      .from("orders")
+      .select("salesperson_id")
+      .in("branch", expandBranchScopeForFilter(scopedBranches))
+      .not("salesperson_id", "is", null)
+      .limit(5000);
+    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    for (const row of data ?? []) {
+      const sid = String((row as { salesperson_id?: string | null }).salesperson_id ?? "").trim();
+      if (sid) scopeSalespersonIds.add(sid);
     }
   }
 

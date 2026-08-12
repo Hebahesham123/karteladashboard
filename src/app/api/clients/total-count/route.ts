@@ -3,6 +3,7 @@ import { createClient as createServerClient } from "@/lib/supabase/server";
 import { createClient } from "@supabase/supabase-js";
 import { resolveAdminBranchScope, resolveAdminScope } from "@/lib/adminScope";
 import { ALLOWED_CUSTOMER_TYPES } from "@/lib/customerTypes";
+import { canonicalizeBranchList, expandBranchScopeForFilter } from "@/lib/branchAliases";
 
 export const dynamic = "force-dynamic";
 
@@ -42,7 +43,9 @@ async function countClientsInBranches(
     let q = head
       ? db.from("client_monthly_metrics").select("client_id", { count: "exact", head: true })
       : db.from("client_monthly_metrics").select("client_id");
-    q = q.in("order_import_branch", branches).in("customer_type", types);
+    // `order_import_branch` holds the raw uploaded value ("فرع فيصل"), so the
+    // canonical scope name has to be expanded to every known spelling first.
+    q = q.in("order_import_branch", expandBranchScopeForFilter(branches)).in("customer_type", types);
     if (salespersonId) q = q.eq("salesperson_id", salespersonId);
     return q;
   };
@@ -85,10 +88,11 @@ export async function GET(req: NextRequest) {
 
   const url = new URL(req.url);
   const salespersonId = String(url.searchParams.get("salesperson") ?? "").trim() || null;
-  const requestedBranches = (url.searchParams.get("branches") ?? "")
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean);
+  // Canonicalize so the intersection with the admin's scope below compares
+  // like with like, whatever spelling the caller sent.
+  const requestedBranches = canonicalizeBranchList(
+    (url.searchParams.get("branches") ?? "").split(",").map((s) => s.trim()).filter(Boolean)
+  );
   const requestedTypes = (url.searchParams.get("types") ?? "")
     .split(",")
     .map((s) => s.trim())

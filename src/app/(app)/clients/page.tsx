@@ -45,6 +45,7 @@ import { createClient } from "@/lib/supabase/client";
 import { useStore } from "@/store/useStore";
 import { getLevelBadgeColor, formatNumber, cn } from "@/lib/utils";
 import { ALLOWED_CUSTOMER_TYPES, allowedCustomerTypesList } from "@/lib/customerTypes";
+import { expandBranchScopeForFilter } from "@/lib/branchAliases";
 import { dataCache } from "@/lib/dataCache";
 import type { ClientOrderImportFields } from "@/lib/orderImportMeta";
 import { isKartelaProductName, kartelaFamilyBaseKey } from "@/lib/kartelaProduct";
@@ -228,15 +229,12 @@ export default function ClientsPage() {
                 }
               }
             }
-            // If no alias mapping for some names, fall back to the raw alias literal.
-            for (const a of aliasNames) {
-              const k = a.toLowerCase();
-              const matched = (aliasRes.data ?? []).some(
-                (r: any) => String(r.alias_name ?? "").trim().toLowerCase() === k
-              );
-              if (!matched) set.add(a);
-            }
-            scopedAllowedBranches = Array.from(set);
+            // The alias table is only an override. Expand through the built-in
+            // map as well, so an alias with no DB row still resolves to the raw
+            // Arabic values stored in `order_import_branch` instead of matching
+            // nothing and blanking the page.
+            for (const a of aliasNames) set.add(a);
+            scopedAllowedBranches = expandBranchScopeForFilter(Array.from(set));
           }
         } catch {
           // If we can't resolve the scope, leave it empty — the page will show no rows

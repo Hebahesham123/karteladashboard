@@ -34,6 +34,7 @@ import {
   allowedCustomerTypesList,
   isAllowedCustomerType,
 } from "@/lib/customerTypes";
+import { canonicalizeBranchList, expandBranchScopeForFilter } from "@/lib/branchAliases";
 
 const MONTHS_AR = ["يناير","فبراير","مارس","أبريل","مايو","يونيو","يوليو","أغسطس","سبتمبر","أكتوبر","نوفمبر","ديسمبر"];
 const MONTHS_EN = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
@@ -172,8 +173,10 @@ export default function DashboardPage() {
   const [branchOpen, setBranchOpen] = useState(false);
   const dashYears = Array.from({ length: 3 }, (_, i) => now.getFullYear() - i);
 
-  // Branch-scoped admins: resolve their alias → actual Arabic branch names
-  // and apply as a hard ceiling on every KPI query below.
+  // Branch-scoped admins: resolve their scope to CANONICAL branch names — the
+  // same vocabulary /api/branches returns for the picker, so the intersection in
+  // `computeEffectiveBranches` can actually match. Queries expand these to the
+  // real `orders.branch` strings via `branchFilterValues` below.
   useEffect(() => {
     let cancelled = false;
     const isBranchScopedAdmin =
@@ -208,15 +211,12 @@ export default function DashboardPage() {
             }
           }
         }
-        for (const a of aliasNames) {
-          const k = a.toLowerCase();
-          const matched = (aliasRes.data ?? []).some(
-            (r: any) => String(r.alias_name ?? "").trim().toLowerCase() === k
-          );
-          if (!matched) set.add(a);
-        }
-        if (!cancelled) setAdminScopeBranches(Array.from(set));
+        // The alias table is only an override — the built-in map already covers
+        // every known branch, so an alias with no DB row still resolves.
+        for (const a of aliasNames) set.add(a);
+        if (!cancelled) setAdminScopeBranches(canonicalizeBranchList(Array.from(set)));
       } catch {
+        // Scope unresolved — leave the client-side ceiling off and let RLS decide.
         if (!cancelled) setAdminScopeBranches([]);
       }
     })();
@@ -226,12 +226,24 @@ export default function DashboardPage() {
   }, [currentUser]);
 
   // Helper: intersect the user's branch scope (if any) with manually selected branches.
+  // Both sides are canonical names, so the intersection is meaningful.
   const computeEffectiveBranches = useCallback((picked: string[]) => {
-    if (adminScopeBranches.length === 0) return picked;
+    if (adminScopeBranches.length === 0) return canonicalizeBranchList(picked);
     if (picked.length === 0) return adminScopeBranches;
     const allowed = new Set(adminScopeBranches);
-    return picked.filter((b) => allowed.has(b));
+    return canonicalizeBranchList(picked).filter((b) => allowed.has(b));
   }, [adminScopeBranches]);
+
+  /**
+   * Canonical branch names → every spelling stored in `orders.branch` /
+   * `order_import_branch`. The DB keeps the raw Arabic value from the Excel
+   * upload ("فرع فيصل"), while scopes and the picker use the canonical English
+   * name ("Faisel"), so filtering on the canonical name alone matches 0 rows.
+   */
+  const branchFilterValues = useCallback(
+    (canonical: string[]) => expandBranchScopeForFilter(canonical),
+    [],
+  );
 
   // Load salesperson + product lists once (customer types: VIP / تجاري / جملة)
   useEffect(() => {
@@ -558,11 +570,13 @@ export default function DashboardPage() {
 
       // Hard branch scope for branch-scoped admins — applied to every query in this fetch.
       const effectiveBranches = computeEffectiveBranches(selectedBranches);
+      // Same list, expanded to the raw values actually stored in the DB.
+      const branchValues = branchFilterValues(effectiveBranches);
 
       const kpiQuery = (q: any) => {
         let qq = q.eq("year", dashYear).in("month", effectiveMonths);
         if (spFilter) qq = qq.eq("salesperson_id", spFilter);
-        if (effectiveBranches.length > 0) qq = qq.in("order_import_branch", effectiveBranches);
+        if (branchValues.length > 0) qq = qq.in("order_import_branch", branchValues);
         qq = qq.in("customer_type", custTypesForFilter);
         if (selectedProductNames.length > 0) qq = qq.in("top_product_name", selectedProductNames);
         if (selectedClientIds.length > 0) qq = qq.in("client_id", selectedClientIds);
@@ -618,7 +632,7 @@ export default function DashboardPage() {
             .eq("year", dashYear)
             .in("month", effectiveMonths);
           if (spFilter) q = q.eq("salesperson_id", spFilter);
-          if (effectiveBranches.length > 0) q = q.in("branch", effectiveBranches);
+          if (branchValues.length > 0) q = q.in("branch", branchValues);
           if (selectedClientIds.length > 0) q = q.in("client_id", selectedClientIds);
           return q;
         }),
@@ -646,7 +660,7 @@ export default function DashboardPage() {
               .order("month", { ascending: false })
               .limit(1);
             if (spFilter) q = q.eq("salesperson_id", spFilter);
-            if (effectiveBranches.length > 0) q = q.in("order_import_branch", effectiveBranches);
+            if (branchValues.length > 0) q = q.in("order_import_branch", branchValues);
             return q;
           })();
           const latestQ = await withTimeout(
@@ -767,7 +781,7 @@ export default function DashboardPage() {
           (q) => {
             let qq = q.eq("month", prevEndMonth).eq("year", prevEndYear).in("customer_type", custTypesForFilter);
             if (spFilter) qq = qq.eq("salesperson_id", spFilter);
-            if (effectiveBranches.length > 0) qq = qq.in("order_import_branch", effectiveBranches);
+            if (branchValues.length > 0) qq = qq.in("order_import_branch", branchValues);
             if (selectedProductNames.length > 0) qq = qq.in("top_product_name", selectedProductNames);
             if (selectedClientIds.length > 0) qq = qq.in("client_id", selectedClientIds);
             return qq;
@@ -799,7 +813,7 @@ export default function DashboardPage() {
             .eq("month", prevEndMonth)
             .eq("year", prevEndYear);
           if (spFilter) oq = oq.eq("salesperson_id", spFilter);
-          if (effectiveBranches.length > 0) oq = oq.in("branch", effectiveBranches);
+          if (branchValues.length > 0) oq = oq.in("branch", branchValues);
           if (selectedClientIds.length > 0) oq = oq.in("client_id", selectedClientIds);
           const { count } = await oq;
           prevO = (count as number) || 0;
@@ -951,12 +965,13 @@ export default function DashboardPage() {
 
       // Hard branch scope applies to rankings too.
       const effectiveBranchesRank = computeEffectiveBranches(selectedBranches);
+      const branchValuesRank = branchFilterValues(effectiveBranchesRank);
 
       /** Same filters as main KPI `kpiQuery` so rankings match the dashboard. */
       const rankingCmmQuery = (q: any) => {
         let qq = q.eq("year", dashYear).in("month", effectiveMonths);
         if (spFilter) qq = qq.eq("salesperson_id", spFilter);
-        if (effectiveBranchesRank.length > 0) qq = qq.in("order_import_branch", effectiveBranchesRank);
+        if (branchValuesRank.length > 0) qq = qq.in("order_import_branch", branchValuesRank);
         qq = qq.in("customer_type", custTypesForFilter);
         if (selectedProductNames.length > 0) qq = qq.in("top_product_name", selectedProductNames);
         if (selectedClientIds.length > 0) qq = qq.in("client_id", selectedClientIds);

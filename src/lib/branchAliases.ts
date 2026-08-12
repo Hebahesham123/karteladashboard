@@ -103,7 +103,21 @@ export function expandBranchScopeForFilter(scope: string[]): string[] {
   const out = new Set<string>();
   for (const s of scope) {
     if (!s) continue;
-    for (const v of expandBranchAliases(s)) out.add(v);
+    // Canonicalize first: callers may pass an alias (English or Arabic) that is
+    // not itself a key of BRANCH_CANONICALS, which would otherwise expand to
+    // just the alias and match zero rows in `orders.branch`.
+    for (const v of expandBranchAliases(canonicalizeBranch(s))) out.add(v);
+    out.add(s);
+  }
+  return Array.from(out);
+}
+
+/** Canonicalize + de-duplicate a list of branch names (any spelling/language). */
+export function canonicalizeBranchList(names: Array<string | null | undefined>): string[] {
+  const out = new Set<string>();
+  for (const n of names) {
+    const c = canonicalizeBranch(n);
+    if (c) out.add(c);
   }
   return Array.from(out);
 }
