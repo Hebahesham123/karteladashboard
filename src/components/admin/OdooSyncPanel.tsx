@@ -174,17 +174,28 @@ export function OdooSyncPanel() {
             : "Prefer ODOO_API_URL and ODOO_API_TOKEN in .env.local. Leave fields empty if env vars are set."}
         </p>
         <div className="grid gap-2 md:grid-cols-2">
+          {/* Chrome saw a text+password pair here and autofilled the login
+              email/password into them, which then got POSTed as baseUrl/apiKey
+              and broke the sync. autoComplete="off" is ignored on password
+              fields; "new-password" is the combination browsers honour. */}
           <Input
             value={baseUrl}
             onChange={(e) => setBaseUrl(e.target.value)}
             placeholder={isRTL ? "Base URL (اختياري)" : "Base URL (optional)"}
+            name="odoo-base-url"
+            autoComplete="off"
+            data-lpignore="true"
+            data-1p-ignore
           />
           <Input
             value={apiKey}
             onChange={(e) => setApiKey(e.target.value)}
             placeholder={isRTL ? "API Key (اختياري)" : "API Key (optional)"}
             type="password"
-            autoComplete="off"
+            name="odoo-api-key"
+            autoComplete="new-password"
+            data-lpignore="true"
+            data-1p-ignore
           />
         </div>
         <div className="grid gap-2 md:grid-cols-2">

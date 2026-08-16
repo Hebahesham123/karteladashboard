@@ -83,7 +83,12 @@ function getAdminDb() {
 export async function GET(req: NextRequest) {
   const cronSecret = process.env.CRON_SECRET;
   const authHeader = req.headers.get("authorization") ?? "";
-  if (cronSecret && authHeader === `Bearer ${cronSecret}`) {
+  // Vercel strips inbound `x-vercel-*` headers, so this one only ever comes
+  // from its own scheduler. Accepting it means the nightly run still fires if
+  // CRON_SECRET is missing from the deployment env — previously that case fell
+  // through to the status branch below and silently never synced.
+  const isVercelCron = req.headers.get("x-vercel-cron") !== null;
+  if (isVercelCron || (cronSecret && authHeader === `Bearer ${cronSecret}`)) {
     // Cron path → run the sync. Reuses POST() so the logic stays in one place.
     return runSync(req, "cron");
   }
@@ -129,7 +134,19 @@ async function runSync(req: NextRequest, trigger: "cron" | "manual") {
   // Manual super-admin sync may override env creds; cron always uses env.
   const envUrl = process.env.ODOO_API_URL ?? process.env.ODOO_BASE_URL;
   const envToken = process.env.ODOO_API_TOKEN ?? process.env.ODOO_ANALYTICS_API_KEY;
-  const ODOO_URL = trigger === "manual" && body.baseUrl?.trim() ? body.baseUrl.trim() : envUrl;
+  // Only accept an override that actually looks like an http(s) origin. A
+  // browser password manager can autofill the login email into the Base URL
+  // box; silently falling back to env beats failing the whole run on it.
+  const overrideUrl = trigger === "manual" ? body.baseUrl?.trim() : "";
+  const isUsableUrl = (v: string | undefined): v is string => {
+    if (!v) return false;
+    try {
+      return /^https?:$/.test(new URL(v).protocol);
+    } catch {
+      return false;
+    }
+  };
+  const ODOO_URL = isUsableUrl(overrideUrl) ? overrideUrl : envUrl;
   const ODOO_TOKEN = trigger === "manual" && body.apiKey?.trim() ? body.apiKey.trim() : envToken;
   if (!ODOO_URL || !ODOO_TOKEN) {
     return NextResponse.json({ error: "Missing Odoo URL or API token. Set ODOO_API_URL + ODOO_API_TOKEN in env, or pass baseUrl/apiKey." }, { status: 500 });
