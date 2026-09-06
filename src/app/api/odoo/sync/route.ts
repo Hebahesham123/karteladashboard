@@ -440,8 +440,22 @@ async function runSync(req: NextRequest, trigger: "cron" | "manual") {
     }
   }
 
-  /* 10. Refresh MV + invalidate caches */
-  try { await db.rpc("refresh_analytics_materialized_views"); } catch (e) { /* non-fatal */ }
+  /* 10. Refresh MV + invalidate caches.
+   *
+   * supabase-js resolves with { error } instead of throwing, so the old
+   * try/catch here could never fire and the failure was discarded entirely.
+   * That hid a statement timeout for weeks: rows landed in `orders`, the MV
+   * stayed frozen, and the sync still reported success. Surface it instead —
+   * the rows are saved either way, so this stays non-fatal, but it must be
+   * visible in sync_state and in the response. */
+  let refreshError = "";
+  try {
+    const { error } = await db.rpc("refresh_analytics_materialized_views");
+    if (error) refreshError = error.message;
+  } catch (e: any) {
+    refreshError = e?.message ?? String(e);
+  }
+  if (refreshError) console.error("[odoo-sync] MV refresh failed:", refreshError);
   invalidateServerCache("urgent-");
   invalidateServerCache("order-distinct");
 
@@ -456,11 +470,14 @@ async function runSync(req: NextRequest, trigger: "cron" | "manual") {
     });
   } catch { /* non-fatal */ }
 
-  /* 12. Mark sync_state success */
+  /* 12. Mark sync_state. A failed MV refresh still means the dashboard shows
+   *     stale numbers, so it is reported as a warning rather than a clean OK. */
   await db.from("sync_state").update({
     last_sync_at: new Date().toISOString(),
-    last_status: "success",
-    last_message: `OK: ${inserted} orders inserted/updated, ${skipped + orderErrors} skipped`,
+    last_status: refreshError ? "warning" : "success",
+    last_message: refreshError
+      ? `${inserted} orders saved, but the analytics refresh failed — dashboard numbers are stale until it succeeds: ${refreshError}`
+      : `OK: ${inserted} orders inserted/updated, ${skipped + orderErrors} skipped`,
     records_processed: inserted,
     records_failed: skipped + orderErrors,
   }).eq("source", "odoo");
@@ -476,6 +493,7 @@ async function runSync(req: NextRequest, trigger: "cron" | "manual") {
     orderErrors,
     failReasons,
     firstDbError: firstDbError || null,
+    refreshError: refreshError || null,
     durationMs: Date.now() - t0,
   });
 }

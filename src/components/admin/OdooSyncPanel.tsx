@@ -126,6 +126,8 @@ export function OdooSyncPanel() {
   const statusIcon = (s: string | null | undefined) => {
     if (s === "success") return <CheckCircle2 className="h-4 w-4 text-green-600" />;
     if (s === "error") return <AlertCircle className="h-4 w-4 text-red-600" />;
+    // Rows saved, but the analytics refresh failed — the dashboard is stale.
+    if (s === "warning") return <AlertCircle className="h-4 w-4 text-amber-600" />;
     if (s === "running") return <RefreshCw className="h-4 w-4 text-blue-600 animate-spin" />;
     return <Clock className="h-4 w-4 text-muted-foreground" />;
   };
