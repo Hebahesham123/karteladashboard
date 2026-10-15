@@ -13,9 +13,15 @@ function getServiceClient() {
 
 async function requireAdmin() {
   const supabase = createServerClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  // Distinguish "could not verify" from "not signed in". When Supabase is
+  // unreachable or slow, getUser() comes back with an error and no user, and
+  // reporting that as 401 made load problems look like everyone being logged
+  // out — the symptom that sent us hunting an auth bug for an hour.
+  const { data: authData, error: authError } = await supabase.auth.getUser();
+  if (authError) {
+    return { error: NextResponse.json({ error: "Could not verify session: " + authError.message }, { status: 503 }) };
+  }
+  const user = authData.user;
   if (!user) return { error: NextResponse.json({ error: "Unauthorized" }, { status: 401 }) };
   const { data: profile } = await supabase.from("users").select("id, role").eq("id", user.id).maybeSingle();
   if (!profile || profile.role !== "admin") {

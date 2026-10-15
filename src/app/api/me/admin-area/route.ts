@@ -17,9 +17,15 @@ const AREA_CACHE_TTL_MS = 5 * 60 * 1000;
 
 export async function GET() {
   const supabase = createServerClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  // Distinguish "could not verify" from "not signed in". When Supabase is
+  // unreachable or slow, getUser() comes back with an error and no user, and
+  // reporting that as 401 made load problems look like everyone being logged
+  // out — the symptom that sent us hunting an auth bug for an hour.
+  const { data: authData, error: authError } = await supabase.auth.getUser();
+  if (authError) {
+    return NextResponse.json({ error: "Could not verify session: " + authError.message }, { status: 503 });
+  }
+  const user = authData.user;
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   // Serve from cache when fresh — admin scope rarely changes mid-session.

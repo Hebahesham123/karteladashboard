@@ -611,13 +611,63 @@ export default function DashboardPage() {
         }
       };
 
+      /* Server-side aggregate — one request, no row cap.
+       *
+       * The paged path below pulls every matching client_monthly_metrics row
+       * into the browser and sums it in JS. That caps out at 1,000 rows per
+       * request, so a wide filter needed dozens of round trips and a timeout
+       * produced a partial total shown as if it were the real one.
+       * get_dashboard_kpis does the same arithmetic in Postgres: verified to
+       * return identical revenue / meters / orders / client counts, 6-12x
+       * faster, and it cannot return a partial answer.
+       *
+       * It takes a contiguous month range. A non-contiguous selection (say
+       * January and March) still uses the paged path, as do RPC failures —
+       * in both cases behaviour is exactly what it was before. */
+      const monthsAreContiguous = effectiveMonths.every(
+        (m, i) => i === 0 || m === effectiveMonths[i - 1] + 1,
+      );
+      const fetchKpiAggregate = async (): Promise<any | null> => {
+        if (!monthsAreContiguous) return null;
+        try {
+          // Via the server route, not supabase.rpc: the browser role is subject
+          // to the RLS policies on these views, which made the same aggregate
+          // hang past 60s where the service role answered in 370ms.
+          const ctrl = new AbortController();
+          const t = setTimeout(() => ctrl.abort(), 15000);
+          const res = await fetch("/api/dashboard/aggregates", {
+            method: "POST",
+            credentials: "include",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              kind: "kpis",
+              year: dashYear,
+              months: effectiveMonths,
+              salesperson: spFilter || null,
+              branches: branchValues,
+              custTypes: custTypesForFilter,
+              products: selectedProductNames,
+              clients: selectedClientIds,
+            }),
+            signal: ctrl.signal,
+          }).finally(() => clearTimeout(t));
+          if (!res.ok) return null;
+          const data = await res.json();
+          return data && typeof data === "object" && !("error" in data) ? data : null;
+        } catch {
+          return null;
+        }
+      };
+
+      const kpiAgg = await fetchKpiAggregate();
+
       const [
         kpiRowsRaw,
         countResult,
         orderCountRes,
       ] = await Promise.all([
-        // KPI rows from client_monthly_metrics (with timeout fallback)
-        getKpiRows(),
+        // Only pay for the row-level fetch when the aggregate is unavailable.
+        kpiAgg ? Promise.resolve([] as any[]) : getKpiRows(),
         // Total clients in scope — resolved server-side (RLS on `clients` returns
         // 0 for branch-scoped admins, which used to zero out the Dormant tile).
         // When the client picker is used, the picked clients ARE the universe.
@@ -651,7 +701,9 @@ export default function DashboardPage() {
       kpiRows = kpiRows.filter((r: any) => inRange(Number(r.month), Number(r.year)));
 
       // ── 3. Fallback: if range empty, use latest available month ───────────
-      if (kpiRows.length === 0) {
+      // Skipped when the aggregate answered: kpiRows is empty by design then,
+      // not because the range had no data.
+      if (!kpiAgg && kpiRows.length === 0) {
         try {
           const latestPromise = (() => {
             let q = supabase.from("client_monthly_metrics")
@@ -687,21 +739,37 @@ export default function DashboardPage() {
 
       // ── 4. Summarize — compute totals and level sub-metrics ───────────────
       // If the slow row-level fetch returned nothing (timeout), keep the RPC values.
+      // The aggregate and the row sum use the same definitions — per-client
+      // meters summed across the range, then GREEN >= 100 / ORANGE > 0 / RED = 0 —
+      // so these two branches produce the same numbers.
+      const hasAgg = kpiAgg !== null;
       const hasRows = kpiRows.length > 0;
-      const { totalM, greenC, orangeC, activeC, clientCount } = summarize(kpiRows);
-      const kartelaQty = Math.round(kpiRows.reduce((s: number, r: any) => s + (Number(r.cartela_count) || 0), 0));
+      const rowSummary = summarize(kpiRows);
+      const totalM = hasAgg ? Number(kpiAgg.totalMeters) || 0 : rowSummary.totalM;
+      const greenC = hasAgg ? Number(kpiAgg.greenCount) || 0 : rowSummary.greenC;
+      const orangeC = hasAgg ? Number(kpiAgg.orangeCount) || 0 : rowSummary.orangeC;
+      const activeC = hasAgg ? Number(kpiAgg.activeClients) || 0 : rowSummary.activeC;
+      const clientCount = hasAgg ? Number(kpiAgg.clientCount) || 0 : rowSummary.clientCount;
+
+      const kartelaQty = hasAgg
+        ? Math.round(Number(kpiAgg.kartelaTotal) || 0)
+        : Math.round(kpiRows.reduce((s: number, r: any) => s + (Number(r.cartela_count) || 0), 0));
       const kartelaClientSet = new Set<string>();
       kpiRows.forEach((r: any) => {
         if ((Number(r.cartela_count) || 0) > 0 && r.client_id) kartelaClientSet.add(String(r.client_id));
       });
-      if (hasRows) {
+      if (hasAgg) {
+        setKartelaTotal(kartelaQty);
+        setKartelaClients(Number(kpiAgg.kartelaClients) || 0);
+      } else if (hasRows) {
         setKartelaTotal(kartelaQty);
         setKartelaClients(kartelaClientSet.size);
       }
 
-      // Aggregate total revenue — only overwrite RPC value if we have row data.
-      const totalRev = kpiRows.reduce((s: number, r: any) => s + (Number(r.total_revenue) || 0), 0);
-      if (hasRows) setTotalRevenue(Math.round(totalRev));
+      const totalRev = hasAgg
+        ? Number(kpiAgg.totalRevenue) || 0
+        : kpiRows.reduce((s: number, r: any) => s + (Number(r.total_revenue) || 0), 0);
+      if (hasAgg || hasRows) setTotalRevenue(Math.round(totalRev));
 
       let greenC_final = greenC;
       let orangeC_final = orangeC;
@@ -709,7 +777,18 @@ export default function DashboardPage() {
       // Level sub-metrics: meters and orders per level
       const levelAgg = { GREEN: { meters: 0, orders: 0 }, ORANGE: { meters: 0, orders: 0 }, RED: { meters: 0, orders: 0 } };
 
-      if (isSingleMonth) {
+      if (hasAgg) {
+        // Counts come from per-client meters summed server-side; the meters and
+        // orders breakdowns are grouped by the row's own level, matching both
+        // row-level branches below.
+        greenC_final  = Number(kpiAgg.greenCount)  || 0;
+        orangeC_final = Number(kpiAgg.orangeCount) || 0;
+        redC          = Number(kpiAgg.redCount)    || 0;
+        for (const lv of ["GREEN", "ORANGE", "RED"] as const) {
+          levelAgg[lv].meters = Number(kpiAgg.levelMeters?.[lv]) || 0;
+          levelAgg[lv].orders = Number(kpiAgg.levelOrders?.[lv]) || 0;
+        }
+      } else if (isSingleMonth) {
         const levelCount = { GREEN: 0, ORANGE: 0, RED: 0 };
         const seenSingle = new Set<string>();
         kpiRows.forEach((r: any) => {
@@ -743,17 +822,17 @@ export default function DashboardPage() {
 
       const consistentMonthly = greenC_final + orangeC_final + redC;
 
-      // Only overwrite the RPC-populated tiles when the slow query actually returned data.
-      if (hasRows) {
+      // Write the tiles from whichever source answered — aggregate or rows.
+      if (hasAgg || hasRows) {
         setTotalMetersValue(Math.round(totalM));
         setGreenCount(greenC_final);
         setOrangeCount(orangeC_final);
         setRedCount(redC);
         setActiveClientCount(activeC);
       }
-      // Level meters/orders breakdowns only exist in the row-level data — leave them
-      // at their previous state when we have no rows.
-      if (hasRows) {
+      // Level meters/orders breakdowns come from the aggregate when present,
+      // otherwise from the rows; left untouched when neither answered.
+      if (hasAgg || hasRows) {
         setGreenMeters(Math.round(levelAgg.GREEN.meters));
         setGreenOrders(levelAgg.GREEN.orders);
         setOrangeMeters(Math.round(levelAgg.ORANGE.meters));
@@ -761,7 +840,7 @@ export default function DashboardPage() {
         setRedOrders(levelAgg.RED.orders);
       }
       setMonthlyClientCount(consistentMonthly);
-      if (hasRows) {
+      if (hasAgg || hasRows) {
         kpiCacheRef.current.set(cacheKey, { totalM: Math.round(totalM), greenC: greenC_final, orangeC: orangeC_final, redC, activeC });
       }
 
@@ -774,7 +853,48 @@ export default function DashboardPage() {
       let prevLo = 0;
       let prevLr = 0;
       let prevDorm = 0;
-      if (isSingleMonth) {
+      // The previous month is a single contiguous month, so the aggregate can
+      // always serve it — one request instead of paging another month of rows.
+      const prevAgg = isSingleMonth
+        ? await (async () => {
+            try {
+              const ctrl = new AbortController();
+              const t = setTimeout(() => ctrl.abort(), 15000);
+              const res = await fetch("/api/dashboard/aggregates", {
+                method: "POST",
+                credentials: "include",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  kind: "kpis",
+                  year: prevEndYear,
+                  months: [prevEndMonth],
+                  salesperson: spFilter || null,
+                  branches: branchValues,
+                  custTypes: custTypesForFilter,
+                  products: selectedProductNames,
+                  clients: selectedClientIds,
+                }),
+                signal: ctrl.signal,
+              }).finally(() => clearTimeout(t));
+              if (!res.ok) return null;
+              const data = await res.json();
+              return data && typeof data === "object" && !("error" in data) ? data : null;
+            } catch {
+              return null;
+            }
+          })()
+        : null;
+
+      if (prevAgg) {
+        prevM = Math.round(Number(prevAgg.totalMeters) || 0);
+        prevR = Math.round(Number(prevAgg.totalRevenue) || 0);
+        prevLg = Number(prevAgg.greenCount) || 0;
+        prevLo = Number(prevAgg.orangeCount) || 0;
+        prevLr = Number(prevAgg.redCount) || 0;
+        prevMc = prevLg + prevLo + prevLr;
+        prevDorm = Math.max(0, denominatorCount - prevMc);
+        prevO = Number(prevAgg.totalOrders) || 0;
+      } else if (isSingleMonth) {
         const prevKpiRows = await safePages(
           "client_monthly_metrics",
           "client_id, total_meters, total_revenue, order_count, level, month, year, customer_type",
@@ -845,11 +965,30 @@ export default function DashboardPage() {
         e.orders += Number(r.order_count) || 0;
         if (r.client_id) e.clients.add(String(r.client_id));
       });
+      // The aggregate already returns one entry per month of the range.
+      // Note its client count is clients with meters > 0, which is what the
+      // "active clients" tile counts — the old row version counted every client
+      // with a row, so the chart and the tile disagreed for zero-meter clients.
+      const aggTrend: any[] | null = hasAgg && Array.isArray(kpiAgg.monthlyTrend)
+        ? kpiAgg.monthlyTrend
+            .filter((e: any) => inRange(Number(e.month), Number(e.year)))
+            .map((e: any) => ({
+              monthIdx: Number(e.month) - 1,
+              year: Number(e.year),
+              meters: Math.round(Number(e.meters) || 0),
+              clients: Number(e.activeClients) || 0,
+              orders: Number(e.orders) || 0,
+              revenue: Math.round(Number(e.revenue) || 0),
+            }))
+        : null;
+
       const trendSorted = Array.from(trendAcc.entries()).sort(
         (a, b) => a[1].y * 12 + a[1].m - (b[1].y * 12 + b[1].m),
       );
       const trend =
-        trendSorted.length > 0
+        aggTrend && aggTrend.length > 0
+          ? aggTrend
+          : trendSorted.length > 0
           ? trendSorted.map(([, e]) => ({
               monthIdx: e.m - 1,
               year: e.y,
@@ -870,7 +1009,9 @@ export default function DashboardPage() {
 
       // Prefer counting from the rows we already have (always reliable when present).
       // Falls back to the safeCountOnly result if rows are empty.
-      const orderCountFromRows = hasRows
+      const orderCountFromRows = hasAgg
+        ? Number(kpiAgg.totalOrders) || 0
+        : hasRows
         ? kpiRows.reduce((s: number, r: any) => s + (Number(r.order_count) || 0), 0)
         : 0;
       orderCountFinal = orderCountFromRows > 0 ? orderCountFromRows : (Number(orderCountRes) || 0);
@@ -992,16 +1133,67 @@ export default function DashboardPage() {
         return all;
       };
 
+      /* All three rankings below read the same rows through rankingCmmQuery and
+       * differ only in which columns they name, so this used to paginate the
+       * identical result set three times — measured at 40s + 5s + 8.6s for a
+       * single month, and roughly two minutes over a three-month range, run
+       * one after the other. Fetch it once and derive all three.
+       *
+       * The explicit order() also matters: .range() paging without an ORDER BY
+       * has no stability guarantee in Postgres, so pages could repeat and skip
+       * rows — which silently changed the totals these rankings are built on. */
+      const RANK_COLS =
+        "client_id, client_name, partner_id, salesperson_id, salesperson_name, salesperson_code, " +
+        "top_product_name, total_meters, total_revenue, month, year";
+
+      /* Preferred path: group in Postgres and return a few dozen rows.
+       * Requires supabase/RPC-dashboard-rankings.sql to have been run; until
+       * then (or if it fails) this falls back to the single paged fetch below,
+       * which is still three times cheaper than the three it replaced. */
+      const rankAgg = await (async (): Promise<any | null> => {
+        try {
+          const ctrl = new AbortController();
+          const t = setTimeout(() => ctrl.abort(), 15000);
+          const res = await fetch("/api/dashboard/aggregates", {
+            method: "POST",
+            credentials: "include",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              kind: "rankings",
+              year: dashYear,
+              months: effectiveMonths,
+              salesperson: spFilter || null,
+              branches: branchValuesRank,
+              custTypes: custTypesForFilter,
+              products: selectedProductNames,
+              clients: selectedClientIds,
+            }),
+            signal: ctrl.signal,
+          }).finally(() => clearTimeout(t));
+          if (!res.ok) return null;
+          const data = await res.json();
+          return data && typeof data === "object" && !("error" in data) ? data : null;
+        } catch {
+          return null;
+        }
+      })();
+
+      const rankRows = rankAgg
+        ? ([] as any[])
+        : await fetchAllPages((from, to) =>
+            rankingCmmQuery(
+              supabase
+                .from("client_monthly_metrics")
+                .select(RANK_COLS)
+                .gt("total_meters", 0)
+                .order("client_id", { ascending: true })
+                .order("month", { ascending: true })
+                .range(from, to),
+            ),
+          );
+
       // ── 1. Salesperson ranking (same filtered universe as KPIs via client_monthly_metrics) ──
-      const spCmmRows = await fetchAllPages((from, to) =>
-        rankingCmmQuery(
-          supabase
-            .from("client_monthly_metrics")
-            .select("client_id, salesperson_id, salesperson_name, salesperson_code, total_meters, total_revenue, month, year")
-            .gt("total_meters", 0)
-            .range(from, to),
-        ),
-      );
+      const spCmmRows = rankRows;
 
       const spAgg = new Map<string, { name: string; code: string; meters: number; clients: number; revenue: number }>();
       const spClientSets = new Map<string, Set<string>>();
@@ -1040,15 +1232,7 @@ export default function DashboardPage() {
       let productRanking: { name: string; qty: number; revenue: number; clients: number }[] = [];
 
       if (useCmmForProducts) {
-        const cmmProdRows = await fetchAllPages((from, to) =>
-          rankingCmmQuery(
-            supabase
-              .from("client_monthly_metrics")
-              .select("client_id, top_product_name, total_meters, total_revenue, month, year")
-              .gt("total_meters", 0)
-              .range(from, to),
-          ),
-        );
+        const cmmProdRows = rankRows;
         const prodAgg = new Map<string, { qty: number; revenue: number; clients: Set<string> }>();
         cmmProdRows.forEach((r: any) => {
           if (!inRange(Number(r.month), Number(r.year))) return;
@@ -1096,15 +1280,7 @@ export default function DashboardPage() {
       }
 
       // ── 3. Client ranking ──────────────────────────────────────────────────
-      const clientRankRows = await fetchAllPages((from, to) =>
-        rankingCmmQuery(
-          supabase
-            .from("client_monthly_metrics")
-            .select("client_id, client_name, partner_id, total_meters, total_revenue, month, year")
-            .gt("total_meters", 0)
-            .range(from, to),
-        ),
-      );
+      const clientRankRows = rankRows;
 
       const clientAgg = new Map<string, { name: string; partner_id: string; meters: number; revenue: number }>();
       clientRankRows.forEach((r: any) => {
@@ -1119,16 +1295,54 @@ export default function DashboardPage() {
           revenue:    prev.revenue + (Number(r.total_revenue) || 0),
         });
       });
-      const finalLeaderboard = Array.from(spAgg.entries())
-        .map(([id, e]) => ({ id, ...e }))
-        .sort((a, b) => b.meters - a.meters)
-        .slice(0, 15);
-      const finalTopProducts = productRanking.sort((a, b) => b.qty - a.qty).slice(0, 10);
-      const finalTopClients = Array.from(clientAgg.entries())
-        .map(([client_id, c]) => ({ client_id, ...c }))
-        .filter((c) => !isExcludedFromClientLeaderboard(c.name))
-        .sort((a, b) => b.meters - a.meters)
-        .slice(0, 10);
+      /* The aggregate returns each leaderboard already grouped and sorted, with
+       * headroom beyond the displayed count so the name-based exclusions below
+       * (house accounts, cashiers) still leave a full list. Falls through to the
+       * row-derived maps above when the aggregate is unavailable. */
+      const finalLeaderboard = rankAgg
+        ? (rankAgg.salespersons ?? [])
+            .map((r: any) => ({
+              id: String(r.id),
+              name: r.name || r.code || "—",
+              code: r.code || "",
+              meters: Number(r.meters) || 0,
+              revenue: Number(r.revenue) || 0,
+              clients: Number(r.clients) || 0,
+            }))
+            .filter((r: any) => !isExcludedFromSalesLeaderboard(`${r.name} ${r.code}`.trim()))
+            .slice(0, 15)
+        : Array.from(spAgg.entries())
+            .map(([id, e]) => ({ id, ...e }))
+            .sort((a, b) => b.meters - a.meters)
+            .slice(0, 15);
+
+      const finalTopProducts = rankAgg
+        ? (rankAgg.products ?? [])
+            .map((r: any) => ({
+              name: String(r.name),
+              qty: Number(r.qty) || 0,
+              revenue: Number(r.revenue) || 0,
+              clients: Number(r.clients) || 0,
+            }))
+            .slice(0, 10)
+        : productRanking.sort((a, b) => b.qty - a.qty).slice(0, 10);
+
+      const finalTopClients = rankAgg
+        ? (rankAgg.clients ?? [])
+            .map((r: any) => ({
+              client_id: String(r.client_id),
+              name: r.name || "—",
+              partner_id: r.partner_id || "",
+              meters: Number(r.meters) || 0,
+              revenue: Number(r.revenue) || 0,
+            }))
+            .filter((c: any) => !isExcludedFromClientLeaderboard(c.name))
+            .slice(0, 10)
+        : Array.from(clientAgg.entries())
+            .map(([client_id, c]) => ({ client_id, ...c }))
+            .filter((c) => !isExcludedFromClientLeaderboard(c.name))
+            .sort((a, b) => b.meters - a.meters)
+            .slice(0, 10);
 
       setLeaderboard(finalLeaderboard);
       setTopProducts(finalTopProducts);

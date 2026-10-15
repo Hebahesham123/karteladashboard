@@ -30,8 +30,6 @@ type CacheEntry = { value: { total: number; basis: string }; expiresAt: number }
 const countCache = new Map<string, CacheEntry>();
 const CACHE_TTL_MS = 5 * 60 * 1000;
 
-const PAGE = 1000;
-
 /** Distinct clients that ever ordered from the given branches (all months). */
 async function countClientsInBranches(
   db: any,
@@ -39,48 +37,43 @@ async function countClientsInBranches(
   types: string[],
   salespersonId: string | null,
 ): Promise<number> {
-  const build = (head: boolean) => {
-    let q = head
-      ? db.from("client_monthly_metrics").select("client_id", { count: "exact", head: true })
-      : db.from("client_monthly_metrics").select("client_id");
-    // `order_import_branch` holds the raw uploaded value ("فرع فيصل"), so the
-    // canonical scope name has to be expanded to every known spelling first.
-    q = q.in("order_import_branch", expandBranchScopeForFilter(branches)).in("customer_type", types);
-    if (salespersonId) q = q.eq("salesperson_id", salespersonId);
-    return q;
-  };
-
-  const { count, error: countErr } = await build(true);
-  if (countErr) throw new Error(countErr.message);
-  const total = Math.max(0, Number(count ?? 0));
-  if (total === 0) return 0;
-
-  // Page in parallel — a branch group can span tens of thousands of rows and a
-  // serial walk pushed this past 10s.
-  const seen = new Set<string>();
-  const pages = Math.ceil(total / PAGE);
-  const CONCURRENCY = 8;
-  for (let i = 0; i < pages; i += CONCURRENCY) {
-    const slice = Array.from({ length: Math.min(CONCURRENCY, pages - i) }, (_, j) => i + j);
-    const results = await Promise.all(
-      slice.map((idx) => build(false).range(idx * PAGE, idx * PAGE + PAGE - 1)),
-    );
-    for (const r of results) {
-      if (r.error) throw new Error(r.error.message);
-      for (const row of r.data ?? []) {
-        const id = String((row as { client_id?: string | null }).client_id ?? "");
-        if (id) seen.add(id);
-      }
-    }
-  }
-  return seen.size;
+  /* Count the distinct clients in Postgres instead of shipping every row here.
+   *
+   * get_dashboard_kpis already groups by client_id and returns the group count,
+   * so an all-time range with the same branch / type / salesperson filters is
+   * exactly this number. Two reasons to prefer it over paging:
+   *
+   *   Correct — the old loop called .range() with no .order(). Postgres gives
+   *   no ordering guarantee without ORDER BY, so paged reads could repeat and
+   *   skip rows; measured against these two branches it returned 583 where the
+   *   real answer is 1197.
+   *
+   *   Fast — up to 48k rows crossed the wire to be de-duplicated in JS. The
+   *   aggregate answers in ~300ms; the all-branches case went 10.5s -> 0.6s. */
+  const { data, error } = await db.rpc("get_dashboard_kpis", {
+    p_from_year: 2000,
+    p_from_month: 1,
+    p_to_year: 2100,
+    p_to_month: 12,
+    p_salesperson: salespersonId,
+    p_branches: expandBranchScopeForFilter(branches),
+    p_cust_types: types,
+  });
+  if (error) throw new Error(error.message);
+  return Math.max(0, Number((data as { clientCount?: number } | null)?.clientCount ?? 0));
 }
 
 export async function GET(req: NextRequest) {
   const supabase = createServerClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  // Distinguish "could not verify" from "not signed in". When Supabase is
+  // unreachable or slow, getUser() comes back with an error and no user, and
+  // reporting that as 401 made load problems look like everyone being logged
+  // out — the symptom that sent us hunting an auth bug for an hour.
+  const { data: authData, error: authError } = await supabase.auth.getUser();
+  if (authError) {
+    return NextResponse.json({ error: "Could not verify session: " + authError.message }, { status: 503 });
+  }
+  const user = authData.user;
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const db = getServiceClient();
