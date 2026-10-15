@@ -410,32 +410,50 @@ async function runSync(req: NextRequest, trigger: "cron" | "manual") {
   }
   const mergedOrderInserts = Array.from(mergedByKey.values());
 
-  /* 9. Upsert orders — same unique key used by the Excel path. */
-  const CHUNK = 500;
-  const CONCURRENCY = 5;
+  /* 9. Upsert orders — same unique key used by the Excel path.
+   *
+   * Chunks of 500 run five-wide used to blow past the database's statement
+   * timeout once `orders` grew past ~190k rows: a backfill reported
+   * "success" having silently dropped 4,500 of 13,160 rows (57014). Smaller
+   * chunks, less concurrency, and a retry on the timeout keep each statement
+   * inside the cap. `.select("id")` is dropped — returning every upserted row
+   * added work for a number we already know from the chunk length. */
+  const CHUNK = 200;
+  const CONCURRENCY = 2;
+  const MAX_ATTEMPTS = 3;
   let inserted = 0;
   let orderErrors = 0;
   let firstDbError = "";
+  let retried = 0;
   const chunks: any[][] = [];
   for (let i = 0; i < mergedOrderInserts.length; i += CHUNK) chunks.push(mergedOrderInserts.slice(i, i + CHUNK));
 
+  const upsertChunk = async (chunk: any[]): Promise<{ ok: boolean; error?: string }> => {
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+      const { error } = await db.from("orders").upsert(chunk, {
+        onConflict: "client_id,product_id,month,year,salesperson_id,invoice_ref",
+        ignoreDuplicates: false,
+      });
+      if (!error) return { ok: true };
+      // 57014 = statement timeout. Transient under load, so back off and retry;
+      // anything else is a real rejection and retrying would only repeat it.
+      const isTimeout = error.code === "57014" || /statement timeout/i.test(error.message ?? "");
+      if (!isTimeout || attempt === MAX_ATTEMPTS) return { ok: false, error: error.message };
+      retried += 1;
+      await new Promise((r) => setTimeout(r, 1000 * attempt));
+    }
+    return { ok: false, error: "exhausted retries" };
+  };
+
   for (let i = 0; i < chunks.length; i += CONCURRENCY) {
     const batch = chunks.slice(i, i + CONCURRENCY);
-    const results = await Promise.all(
-      batch.map((chunk) =>
-        db.from("orders").upsert(chunk, {
-          onConflict: "client_id,product_id,month,year,salesperson_id,invoice_ref",
-          ignoreDuplicates: false,
-        }).select("id")
-      )
-    );
+    const results = await Promise.all(batch.map(upsertChunk));
     for (let j = 0; j < results.length; j++) {
-      const { data, error } = results[j];
-      if (error) {
-        if (!firstDbError) firstDbError = error.message;
-        orderErrors += batch[j].length;
+      if (results[j].ok) {
+        inserted += batch[j].length;
       } else {
-        inserted += data?.length ?? 0;
+        if (!firstDbError) firstDbError = results[j].error ?? "unknown";
+        orderErrors += batch[j].length;
       }
     }
   }
@@ -463,21 +481,28 @@ async function runSync(req: NextRequest, trigger: "cron" | "manual") {
   try {
     await db.from("activity_logs").insert({
       activity_type: "EXCEL_UPLOAD",
-      description: `Odoo sync (${trigger}): ${inserted} orders / ${skipped + orderErrors} skipped, range ${dateFrom} → ${dateTo}`,
+      description: `Odoo sync (${trigger}): ${inserted} orders saved, ${skipped} skipped, ${orderErrors} rejected, range ${dateFrom} → ${dateTo}`,
       metadata: { source: "odoo", trigger: trigger, dateFrom, dateTo, pagesFetched, totalRecords,
-                  fetchedRows: allRows.length, inserted, skipped, orderErrors, failReasons,
+                  fetchedRows: allRows.length, inserted, skipped, orderErrors, retried, failReasons,
                   firstDbError: firstDbError || null, durationMs: Date.now() - t0 },
     });
   } catch { /* non-fatal */ }
 
-  /* 12. Mark sync_state. A failed MV refresh still means the dashboard shows
-   *     stale numbers, so it is reported as a warning rather than a clean OK. */
+  /* 12. Mark sync_state.
+   *
+   * Rows the database rejected are NOT the same as rows we deliberately
+   * skipped, and lumping them together as "skipped" is how 4,500 dropped
+   * rows once read as a clean run. Report them separately, and treat either
+   * a failed refresh or rejected rows as a warning rather than a clean OK. */
+  const warn: string[] = [];
+  if (orderErrors > 0) warn.push(`${orderErrors} rows rejected by the database (${firstDbError})`);
+  if (refreshError) warn.push(`analytics refresh failed, dashboard numbers are stale (${refreshError})`);
   await db.from("sync_state").update({
     last_sync_at: new Date().toISOString(),
-    last_status: refreshError ? "warning" : "success",
-    last_message: refreshError
-      ? `${inserted} orders saved, but the analytics refresh failed — dashboard numbers are stale until it succeeds: ${refreshError}`
-      : `OK: ${inserted} orders inserted/updated, ${skipped + orderErrors} skipped`,
+    last_status: warn.length ? "warning" : "success",
+    last_message: warn.length
+      ? `${inserted} orders saved — ${warn.join("; ")}`
+      : `OK: ${inserted} orders inserted/updated, ${skipped} skipped`,
     records_processed: inserted,
     records_failed: skipped + orderErrors,
   }).eq("source", "odoo");
@@ -491,6 +516,7 @@ async function runSync(req: NextRequest, trigger: "cron" | "manual") {
     processed: inserted,
     skipped,
     orderErrors,
+    retried,
     failReasons,
     firstDbError: firstDbError || null,
     refreshError: refreshError || null,
